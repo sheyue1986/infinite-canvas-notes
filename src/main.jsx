@@ -34,6 +34,35 @@ function updateFolder(root, path, transform) {
   };
 }
 
+function findFolder(root, id) {
+  for (const folder of root.folders) {
+    if (folder.id === id) return folder;
+    const nested = findFolder(folder, id);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function updateFolderById(root, id, transform) {
+  return {
+    ...root,
+    folders: root.folders.map((folder) => folder.id === id
+      ? transform(folder)
+      : updateFolderById(folder, id, transform)),
+  };
+}
+
+function removeFolderById(root, id) {
+  return {
+    ...root,
+    folders: root.folders.filter((folder) => folder.id !== id).map((folder) => removeFolderById(folder, id)),
+  };
+}
+
+function containsFolder(folder, id) {
+  return folder.id === id || folder.folders.some((child) => containsFolder(child, id));
+}
+
 async function thumbnail(elements, files) {
   try {
     const svg = await exportToSvg({
@@ -110,7 +139,8 @@ function App() {
   const [nameInput, setNameInput] = useState("");
   const [language, setLanguage] = useState(() => localStorage.getItem(LANGUAGE_KEY) || "zh-CN");
   const [processingImage, setProcessingImage] = useState(false);
-  const imageInputRef = useRef(null);
+  const [draggedFolderId, setDraggedFolderId] = useState(null);
+  const [contextImage, setContextImage] = useState(null);
 
   const zh = language === "zh-CN";
   const ui = zh ? {
@@ -118,13 +148,13 @@ function App() {
     hint: "点击文件夹进入；点击素材后跟随鼠标，单击画布确认放置。", empty: "此文件夹还没有素材。",
     back: "‹ 返回", place: "放置", objects: "个对象", delete: "删除", cancel: "取消", confirm: "确定",
     folderDialog: "新建素材文件夹", saveDialog: "保存选区为素材", name: "名称", placed: "单击放置 · Esc 取消",
-    selectFirst: "请先使用选择工具选中画布内容。", imageFailed: "图片处理失败，请换一张图片重试。", language: "切换至 English",
+    selectFirst: "请先使用选择工具选中画布内容。", imageFailed: "图片处理失败，请换一张图片重试。", language: "切换至 English", deleteFolder: "删除文件夹", moveHint: "拖到另一文件夹以移动",
   } : {
     library: "My library", newFolder: "New folder", save: "Save selection", removeBg: "Remove background", processing: "Processing…",
     hint: "Open a folder, then choose a material. Click the canvas to place it.", empty: "This folder is empty.",
     back: "‹ Back", place: "Place", objects: "objects", delete: "Delete", cancel: "Cancel", confirm: "Confirm",
     folderDialog: "New material folder", saveDialog: "Save selection", name: "Name", placed: "Click to place · Esc to cancel",
-    selectFirst: "Select content on the canvas first.", imageFailed: "Couldn't process this image. Please try another one.", language: "Switch to 中文",
+    selectFirst: "Select content on the canvas first.", imageFailed: "Couldn't process this image. Please try another one.", language: "Switch to 中文", deleteFolder: "Delete folder", moveHint: "Drag onto another folder to move",
   };
 
   const current = useMemo(() => folderAt(library, path), [library, path]);
@@ -162,29 +192,57 @@ function App() {
     setNameDialog({ type: "object", elements, preview });
   }, [current.objects.length, path, ui.selectFirst, zh]);
 
-  const processImage = useCallback(async (event) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
+  const deleteFolder = useCallback((id, name) => {
+    if (!window.confirm(zh ? `删除“${name}”及其全部内容？` : `Delete “${name}” and everything inside it?`)) return;
+    setLibrary((root) => removeFolderById(root, id));
+  }, [zh]);
+
+  const moveFolder = useCallback((sourceId, targetId) => {
+    if (!sourceId || sourceId === targetId) return;
+    setLibrary((root) => {
+      const source = findFolder(root, sourceId);
+      if (!source || containsFolder(source, targetId)) return root;
+      const withoutSource = removeFolderById(root, sourceId);
+      return updateFolderById(withoutSource, targetId, (target) => ({
+        ...target,
+        folders: [...target.folders, source],
+      }));
+    });
+  }, []);
+
+  const openImageContextMenu = useCallback((event) => {
+    const api = apiRef.current;
+    if (!api) return;
+    const selected = api.getSceneElements().filter((element) => api.getAppState().selectedElementIds[element.id]);
+    const image = selected.length === 1 && selected[0].type === "image" ? selected[0] : null;
+    if (!image) return;
+    event.preventDefault();
+    setContextImage({ element: image, x: event.clientX, y: event.clientY });
+  }, []);
+
+  const removeSelectedImageBackground = useCallback(async () => {
+    const api = apiRef.current;
+    if (!api || !contextImage) return;
+    const file = api.getFiles()[contextImage.element.fileId];
+    if (!file?.dataURL) return;
     setProcessingImage(true);
+    setContextImage(null);
     try {
-      const image = await removeImageBackground(file);
-      const name = file.name.replace(/\.[^/.]+$/, "") + (zh ? "（已去底）" : " (cutout)");
-      const displayScale = Math.min(1, 480 / Math.max(image.width, image.height));
-      setLibrary((root) => updateFolder(root, path, (folder) => ({
-        ...folder,
-        objects: [...folder.objects, {
-          id: crypto.randomUUID(), kind: "image", name,
-          preview: image.dataUrl, imageData: image.dataUrl,
-          width: Math.round(image.width * displayScale), height: Math.round(image.height * displayScale),
-        }],
-      })));
+      const response = await fetch(file.dataURL);
+      const image = await removeImageBackground(await response.blob());
+      const fileId = crypto.randomUUID();
+      api.addFiles([{ id: fileId, dataURL: image.dataUrl, mimeType: "image/png", created: Date.now() }]);
+      api.updateScene({
+        elements: api.getSceneElements().map((element) => element.id === contextImage.element.id
+          ? { ...element, fileId, version: element.version + 1, versionNonce: Math.floor(Math.random() * 2 ** 31), updated: Date.now() }
+          : element),
+      });
     } catch {
       window.alert(ui.imageFailed);
     } finally {
       setProcessingImage(false);
     }
-  }, [path, ui.imageFailed, zh]);
+  }, [contextImage, ui.imageFailed]);
 
   const submitName = useCallback((event) => {
     event.preventDefault();
@@ -256,6 +314,7 @@ function App() {
         className="canvas-shell"
         onPointerMove={(event) => placing && setPointer({ x: event.clientX, y: event.clientY })}
         onPointerDownCapture={confirmPlacement}
+        onContextMenu={openImageContextMenu}
       >
         <Excalidraw
           excalidrawAPI={(api) => { apiRef.current = api; }}
@@ -282,15 +341,18 @@ function App() {
           </header>
           <div className="library-actions">
             <button className="save-selection" onClick={saveSelection}>＋ {ui.save}</button>
-            <button className="remove-background" onClick={() => imageInputRef.current?.click()} disabled={processingImage}>{processingImage ? ui.processing : ui.removeBg}</button>
-            <input ref={imageInputRef} className="visually-hidden" type="file" accept="image/*" onChange={processImage} />
           </div>
-          <p className="hint">{ui.hint}</p>
+          <p className="hint">{ui.hint} {ui.moveHint}</p>
           <div className="library-content">
             {current.folders.map((folder) => (
-              <button className="folder-card" key={folder.id} onClick={() => setPath((items) => [...items, folder.id])}>
-                <FolderIcon /><b>{folder.name}</b><small>{folder.folders.length + folder.objects.length}</small>
-              </button>
+              <div className={`folder-card ${draggedFolderId === folder.id ? "is-dragging" : ""}`} key={folder.id} draggable
+                onDragStart={() => setDraggedFolderId(folder.id)} onDragEnd={() => setDraggedFolderId(null)}
+                onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); moveFolder(draggedFolderId, folder.id); setDraggedFolderId(null); }}>
+                <button className="folder-open" onClick={() => setPath((items) => [...items, folder.id])} title={folder.name}>
+                  <FolderIcon /><b>{folder.name}</b><small>{folder.folders.length + folder.objects.length}</small>
+                </button>
+                <button className="folder-delete" onClick={() => deleteFolder(folder.id, folder.name)} title={ui.deleteFolder} aria-label={ui.deleteFolder}>×</button>
+              </div>
             ))}
             {current.objects.map((object) => (
               <article className="object-card" key={object.id}>
@@ -323,6 +385,12 @@ function App() {
               <button type="submit">{ui.confirm}</button>
             </div>
           </form>
+        </div>
+      )}
+
+      {contextImage && (
+        <div className="image-context-menu" style={{ left: contextImage.x, top: contextImage.y }} role="menu">
+          <button onClick={removeSelectedImageBackground} disabled={processingImage}>{processingImage ? ui.processing : ui.removeBg}</button>
         </div>
       )}
     </main>

@@ -12,18 +12,15 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .object-library .back-button { min-width: 54px; text-align: left; font-size: 13px; }
 .save-selection { width: 100%; padding: 9px; border: 1px dashed #aeb3c1; border-radius: 8px; background: #fafafd; color: #373b47; cursor: pointer; font: inherit; }
 .save-selection:hover { background: #f1f3fb; border-color: #727d9b; }
-.library-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.library-actions .save-selection { grid-column: 1 / -1; }
-.remove-background { min-width: 0; padding: 8px 6px; border: 1px solid #e0e2e8; border-radius: 8px; background: #fff; color: #4a4e5a; cursor: pointer; font: inherit; font-size: 12px; }
-.remove-background:hover { background: #f6f7fb; border-color: #aeb3c1; }
-.remove-background:disabled { opacity: .55; cursor: progress; }
-.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; clip-path: inset(50%); }
+.library-actions { display: grid; gap: 8px; }
 .hint, .empty { color: #7c8190; font-size: 12px; line-height: 1.5; }
 .object-grid { display: grid; gap: 8px; }
 .library-content { display: grid; gap: 8px; }
-.folder-card { display: grid; grid-template-columns: 28px 1fr 22px; align-items: center; gap: 8px; width: 100%; padding: 9px 7px; border: 0; border-radius: 8px; background: transparent; color: #343744; cursor: pointer; text-align: left; font: inherit; }
-.folder-card:hover { background: #f4f5f8; }
+.folder-card { display: grid; grid-template-columns: 1fr 28px; align-items: center; border-radius: 8px; color: #343744; }
+.folder-card:hover { background: #f4f5f8; }.folder-card.is-dragging { opacity: .4; }
+.folder-open { display: grid; grid-template-columns: 28px 1fr 22px; align-items: center; gap: 8px; width: 100%; padding: 9px 7px; border: 0; border-radius: 8px; background: transparent; color: inherit; cursor: pointer; text-align: left; font: inherit; }
 .folder-icon { width: 21px; height: 21px; fill: none; stroke: #5b6578; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }.folder-card small { color: #8a8f9d; text-align: right; }
+.folder-delete { width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: #989da9; cursor: pointer; font-size: 17px; line-height: 1; opacity: 0; }.folder-card:hover .folder-delete { opacity: 1; }.folder-delete:hover { color: #c23d47; background: #fff; }
 .object-card { display: grid; grid-template-columns: 44px 1fr 22px; gap: 9px; align-items: center; padding: 7px; border-radius: 8px; }
 .object-card:hover { background: #f4f5f8; }
 .object-preview { width: 44px; height: 44px; border: 1px solid #d9dce5; border-radius: 6px; background: repeating-linear-gradient(45deg,#eef0f5,#eef0f5 5px,#f9fafc 5px,#f9fafc 10px); cursor: pointer; color: #59607a; font-weight: 700; }
@@ -42,4 +39,6 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .name-dialog > div { display: flex; justify-content: flex-end; gap: 8px; }
 .name-dialog button { border: 0; border-radius: 7px; padding: 7px 11px; background: #efeff3; color: #454650; font: inherit; cursor: pointer; }
 .name-dialog button[type="submit"] { background: #4f46e5; color: #fff; }
+.image-context-menu { position: fixed; z-index: 90; min-width: 130px; padding: 5px; border: 1px solid #dedfe5; border-radius: 9px; background: #fff; box-shadow: 0 10px 28px rgba(35,38,50,.17); }
+.image-context-menu button { width: 100%; padding: 8px 10px; border: 0; border-radius: 6px; background: transparent; color: #343744; cursor: pointer; text-align: left; font: inherit; font-size: 13px; }.image-context-menu button:hover { background: #f2f3f7; }.image-context-menu button:disabled { opacity: .55; cursor: progress; }
 @media (max-width: 650px) { .library-trigger span { display: none; }.object-library { right: 8px; top: 55px; width: calc(100vw - 16px); } }
