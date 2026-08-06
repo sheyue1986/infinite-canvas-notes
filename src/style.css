@@ -1,3 +1,4 @@
+
 :root { font-family: Inter, "Segoe UI", "Microsoft YaHei UI", sans-serif; color: #272832; }
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
@@ -58,6 +59,7 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .library-search { width: 100%; box-sizing: border-box; margin-top: 8px; padding: 7px 9px; border: 1px solid #d9dce5; border-radius: 7px; background: #fff; color: #343744; font: inherit; font-size: 12px; }
 .bulk-actions { display: flex; align-items: center; gap: 7px; margin-top: 8px; color: #777e8e; font-size: 12px; }.bulk-actions button { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 6px; background: #fff0f0; color: #c23d47; cursor: pointer; font: 15px/1 sans-serif; }
 .hint, .empty { color: #7c8190; font-size: 12px; line-height: 1.5; }
+.hint.is-brush-picking { margin: 8px 0; padding: 7px 9px; border-radius: 7px; background: #f0efff; color: #5148cc; }
 .object-grid { display: grid; gap: 8px; }
 .library-content { display: grid; flex: 1; min-height: 0; gap: 8px; overflow-y: auto; padding-right: 6px; scrollbar-gutter: stable; }
 .library-content::-webkit-scrollbar { width: 7px; }.library-content::-webkit-scrollbar-track { background: transparent; }.library-content::-webkit-scrollbar-thumb { border-radius: 8px; background: #c5c9d4; }.library-content::-webkit-scrollbar-thumb:hover { background: #9ca2b2; }
@@ -74,6 +76,7 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .object-preview img { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: 5px; background: white; }
 .object-name { display: block; padding: 0; border: 0; background: transparent; cursor: pointer; color: #30313a; font: inherit; font-weight: 600; text-align: left; }
 .object-card small { color: #858a97; font-size: 11px; }
+.object-card > div { min-width: 0; }.object-card > div small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .object-delete { font-size: 16px; }
 .object-delete:hover { color: #c23d47; }
 .object-actions { display: none; }
@@ -94,6 +97,11 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .relationship-object-jump .relationship-menu { right: 0; top: 35px; z-index: 80; }
 .placement-ghost img { display: block; width: 100%; height: 70px; object-fit: contain; }.placement-ghost small { display: block; margin-top: 5px; color: #555e75; font-size: 10px; white-space: nowrap; }
 .is-placing .canvas-shell { cursor: crosshair; }
+.is-material-brush .excalidraw canvas, .is-material-brush .excalidraw .InteractiveCanvas { cursor: crosshair !important; }
+.material-brush-panel { position: fixed; right: 18px; top: 62px; z-index: 35; display: grid; gap: 10px; width: 244px; padding: 12px; border: 1px solid #dedfe5; border-radius: 11px; background: rgba(255,255,255,.97); box-shadow: 0 10px 28px rgba(35,38,50,.15); }
+.material-brush-panel header { display: grid; grid-template-columns: 38px 1fr 24px; gap: 9px; align-items: center; }.material-brush-panel header > div { min-width: 0; }.material-brush-panel header strong, .material-brush-panel header small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.material-brush-panel header strong { font-size: 13px; }.material-brush-panel header small { margin-top: 2px; color: #858a97; font-size: 11px; }.material-brush-panel header > button { width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: #747987; cursor: pointer; font: 18px/1 sans-serif; }.material-brush-panel header > button:hover { background: #f0efff; color: #5148cc; }
+.material-brush-preview { display: grid; place-items: center; width: 38px; height: 38px; overflow: hidden; border: 1px solid #d9dce5; border-radius: 7px; background: #f7f7fa; color: #5d55d7; }.material-brush-preview img { width: 100%; height: 100%; object-fit: contain; }
+.material-brush-panel label { display: grid; gap: 4px; color: #555b69; font-size: 11px; }.material-brush-panel label span { display: flex; justify-content: space-between; }.material-brush-panel output { color: #777d8c; font-variant-numeric: tabular-nums; }.material-brush-panel input[type="range"] { width: 100%; accent-color: #625bd1; }.material-brush-panel p { margin: 0; color: #858a97; font-size: 10px; }
 
 .name-dialog-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: rgb(20 20 30 / 18%); }
 .name-dialog { width: min(320px, calc(100vw - 32px)); display: grid; gap: 14px; padding: 18px; border: 1px solid #e4e4e9; border-radius: 13px; background: #fff; box-shadow: 0 18px 48px rgb(20 20 30 / 18%); }
@@ -107,3 +115,4 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .precise-line-preview line { stroke: #6965db; stroke-width: 1.5; stroke-dasharray: 5 4; }
 .is-pixel-tool .excalidraw canvas, .is-pixel-tool .excalidraw .InteractiveCanvas { cursor: none !important; }
 @media (max-width: 650px) { .library-trigger span { display: none; }.object-library { right: 8px; top: 55px; width: calc(100vw - 16px); } }
+
