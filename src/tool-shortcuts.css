@@ -1,0 +1,14 @@
+.shortcut-settings { box-sizing:border-box; width:min(390px,calc(100vw - 32px)); padding:14px; border:1px solid #dce1dd;
+  border-radius:12px; color:#292d2d; background:#fff; font:13px/1.45 system-ui,sans-serif; box-shadow:0 8px 28px #252c2633; }
+.shortcut-settings::backdrop { background:#242b2730; }
+.shortcut-settings header,.shortcut-settings footer { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.shortcut-settings h2 { margin:0; font-size:16px; }
+.shortcut-settings p { margin:8px 0; color:#59625c; }
+.shortcut-settings button { border:0; border-radius:5px; padding:5px 8px; background:#eff1ee; color:inherit; font:inherit; cursor:pointer; }
+.shortcut-settings button:disabled { opacity:.45; cursor:default; }
+.shortcut-settings button:focus-visible { outline:2px solid #7957ad; }
+.shortcut-settings .shortcut-message { color:#8a4246; }
+.shortcut-tool-list { max-height:min(420px,56dvh); overflow:auto; padding:2px; scrollbar-width:thin; }
+.shortcut-tool-row { display:grid; grid-template-columns:minmax(0,1fr) 94px 28px; align-items:center; gap:6px; padding:4px 0; border-top:1px solid #eff1ee; }
+.shortcut-key[data-capturing],.shortcut-settings footer button:last-child { background:#f2edf8; color:#594080; }
+.shortcut-settings footer { margin-top:9px; }

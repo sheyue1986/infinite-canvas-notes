@@ -1,9 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { createPortal } from "react-dom";
-import { Excalidraw, convertToExcalidrawElements, exportToSvg } from "@excalidraw/excalidraw";
+import { Excalidraw, CaptureUpdateAction, MainMenu, convertToExcalidrawElements, mutateElement, serializeAsJSON } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import "./style.css";
+import { emptyLibrary, exportTree, loadLibrary, materialData, packLibrary, packMaterial, saveLibrary, saveProjectScene, write } from "./storage.js";
+import { Gallery, coverFor, downloadJSON } from "./workspace.jsx";
+import { LibraryIcon, MaterialPanel, materialDragType } from "./material-panel.jsx";
+import { LayerPanel, layerSafeElements, useLayers } from "./layers.jsx";
+import { CalibrationDialog, PrecisionPanel, PrecisionGridRow, PrecisionOverlay } from "./precision.jsx";
+import { defaults as precisionDefaults, measureAt, measured, preciseStroke } from "./precision-engine.js";
+import { BrushKit, finalizeBrush, hasLineStyle, isDefaultToolKey, useBrushKit } from "./brush-kit.jsx";
+import { ShortcutSettings, shortcutFromEvent } from "./tool-shortcuts.jsx";
+import { fillAt } from "./bucket-fill.js";
+import { createNudge } from "./nudge.js";
+import { makePaintEngine, sceneImageFileIds } from "./paint-engine.js";
 
 const STORAGE_KEY = "infinite-canvas-notes-library-v2";
 const LIBRARY_DB_NAME = "infinite-canvas-notes";
@@ -28,44 +38,6 @@ function loadLegacyLibrary() {
 
 function isValidLibrary(value) {
   return Boolean(value && Array.isArray(value.folders) && Array.isArray(value.objects));
-}
-
-function isValidLibraryFolder(value) {
-  return Boolean(
-    value
-    && typeof value.name === "string"
-    && Array.isArray(value.folders)
-    && Array.isArray(value.objects)
-    && value.folders.every(isValidLibraryFolder),
-  );
-}
-
-function cloneImportedFolder(folder) {
-  return {
-    ...folder,
-    id: crypto.randomUUID(),
-    folders: folder.folders.map(cloneImportedFolder),
-    objects: folder.objects.map((object) => ({ ...object, id: crypto.randomUUID() })),
-  };
-}
-
-function safeDownloadName(name) {
-  return (name || "素材文件夹").replace(/[\\/:*?"<>|]/g, "_").trim() || "素材文件夹";
-}
-
-function indexLibraryObjects(folder, idPath = [], namePath = []) {
-  const folderName = folder.name ? [...namePath, folder.name] : namePath;
-  const pathLabel = folderName.join(" / ");
-  const matches = folder.objects.map((object) => ({
-    object,
-    sourcePath: idPath,
-    pathLabel,
-    searchText: `${object.name || ""} ${pathLabel}`.toLocaleLowerCase(),
-  }));
-  return folder.folders.reduce((results, child) => [
-    ...results,
-    ...indexLibraryObjects(child, [...idPath, child.id], folderName),
-  ], matches);
 }
 
 async function readBundledLibrary() {
@@ -109,19 +81,19 @@ async function readIndexedLibrary() {
   }
 }
 
-async function writeIndexedLibrary(library) {
-  const database = await openLibraryDatabase();
-  try {
-    await new Promise((resolve, reject) => {
-      const transaction = database.transaction(LIBRARY_DB_STORE, "readwrite");
-      transaction.objectStore(LIBRARY_DB_STORE).put(JSON.stringify(library), LIBRARY_DB_KEY);
-      transaction.oncomplete = resolve;
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error);
-    });
-  } finally {
-    database.close();
-  }
+let libraryMigration;
+function openMaterials() {
+  return libraryMigration ??= (async () => {
+    const existing = await loadLibrary();
+    if (existing) return existing;
+    const browserLibrary = await readIndexedLibrary();
+    const local = loadLegacyLibrary();
+    const source = isValidLibrary(browserLibrary) ? browserLibrary
+      : (localStorage.getItem(STORAGE_KEY) && isValidLibrary(local) ? local : await readBundledLibrary());
+    const migrated = packLibrary(source || emptyLibrary());
+    await saveLibrary(null, migrated);
+    return migrated;
+  })().finally(() => { libraryMigration = undefined; });
 }
 
 async function readIndexedCanvas() {
@@ -151,27 +123,6 @@ async function readIndexedCanvas() {
       }
     }
     return values.backup ? JSON.parse(values.backup) : null;
-  } finally {
-    database.close();
-  }
-}
-
-async function writeIndexedCanvas(canvas) {
-  const database = await openLibraryDatabase();
-  try {
-    await new Promise((resolve, reject) => {
-      const transaction = database.transaction(LIBRARY_DB_STORE, "readwrite");
-      const store = transaction.objectStore(LIBRARY_DB_STORE);
-      const currentRequest = store.get(CANVAS_DB_KEY);
-      currentRequest.onsuccess = () => {
-        const current = currentRequest.result;
-        if (current) store.put(current, CANVAS_BACKUP_DB_KEY);
-        store.put(JSON.stringify(canvas), CANVAS_DB_KEY);
-      };
-      transaction.oncomplete = resolve;
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error);
-    });
   } finally {
     database.close();
   }
@@ -250,15 +201,13 @@ function removeFolderById(root, id) {
   };
 }
 
-function containsFolder(folder, id) {
-  return folder.id === id || folder.folders.some((child) => containsFolder(child, id));
-}
-
-function listFolders(root, prefix = []) {
-  return root.folders.flatMap((folder) => [
-    { id: folder.id, name: [...prefix, folder.name].join(" / ") },
-    ...listFolders(folder, [...prefix, folder.name]),
-  ]);
+function findFolderPath(root, id) {
+  for (const folder of root.folders) {
+    if (folder.id === id) return [id];
+    const nested = findFolderPath(folder, id);
+    if (nested) return [folder.id, ...nested];
+  }
+  return null;
 }
 
 function storedFile(file) {
@@ -268,23 +217,6 @@ function storedFile(file) {
     mimeType: file.mimeType || "image/png",
     created: typeof file.created === "number" ? file.created : Date.now(),
   };
-}
-
-async function thumbnail(elements, files) {
-  try {
-    const svg = await exportToSvg({
-      elements,
-      files,
-      appState: { exportBackground: true, viewBackgroundColor: "#ffffff" },
-    });
-    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg.outerHTML)}`;
-  } catch {
-    return "";
-  }
-}
-
-function FolderIcon() {
-  return <svg className="folder-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5h6l1.8 2h9.2v9.8a2.2 2.2 0 0 1-2.2 2.2H5.7a2.2 2.2 0 0 1-2.2-2.2Z" /><path d="M3.5 8.5h17" /></svg>;
 }
 
 function EraserIcon() {
@@ -357,8 +289,33 @@ async function imageToCanvas(file) {
   return canvas;
 }
 
-function App() {
+function App({ project, onExit }) {
   const apiRef = useRef(null);
+  const brushName = useRef("钢笔");
+  const layers = useLayers(project, apiRef, brushName);
+  const layerState = layers.state;
+  const savedLibrary = useRef(null);
+  const [libraryError, setLibraryError] = useState("");
+  const placementRequest = useRef(0);
+  const strokeProfile = useRef(null);
+  const strokeRelease = useRef(null);
+  const strokePointer = useRef(null);
+  const strokePenPressure = useRef(.5);
+  const penStatusTime = useRef(0);
+  const paintCanvas = useRef(null);
+  const paintEngine = useRef(null);
+  const measureRef = useRef(null);
+  const precisionRef = useRef({ ...precisionDefaults, ...project.scene?.precision });
+  const [precision, setPrecision] = useState(precisionRef.current);
+  const [precisionOpen, setPrecisionOpen] = useState(false);
+  const [precisionSection, setPrecisionSection] = useState(null);
+  const [precisionEditing, setPrecisionEditing] = useState(null);
+  const [measureStatus, setMeasureStatus] = useState("");
+  const [calibrationLength, setCalibrationLength] = useState(null);
+  const strokeHold = useRef(null);
+  const liveMeasure = useRef(null);
+  const measureOutput = useRef(null);
+  const [saveError, setSaveError] = useState("");
   const [library, setLibrary] = useState({ folders: [], objects: [] });
   const [libraryReady, setLibraryReady] = useState(false);
   const [canvasInitialData, setCanvasInitialData] = useState({ appState: { viewBackgroundColor: "#f2f2f7" }, elements: [], files: {} });
@@ -369,39 +326,53 @@ function App() {
   const [selectedElementIds, setSelectedElementIds] = useState({});
   const [relationshipSourceId, setRelationshipSourceId] = useState(null);
   const [relationshipMenuOpen, setRelationshipMenuOpen] = useState(false);
-  const [relationshipHost, setRelationshipHost] = useState(null);
   const [relationshipOverlayElement, setRelationshipOverlayElement] = useState(null);
   const [canvasViewport, setCanvasViewport] = useState(null);
   const [isOpen, setIsOpen] = useState(false);
   const [path, setPath] = useState([]);
-  const [placing, setPlacing] = useState(null);
-  const [materialBrush, setMaterialBrush] = useState(null);
-  const [materialBrushPicking, setMaterialBrushPicking] = useState(false);
-  const [materialBrushSettings, setMaterialBrushSettings] = useState({ size: 100, randomSize: 20, randomRotation: 15, spacing: 120 });
-  const [materialBrushDrawing, setMaterialBrushDrawing] = useState(false);
-  const [pointer, setPointer] = useState({ x: 0, y: 0 });
   const [nameDialog, setNameDialog] = useState(null);
   const [nameInput, setNameInput] = useState("");
   const [language, setLanguage] = useState(() => localStorage.getItem(LANGUAGE_KEY) || "zh-CN");
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
+  const [shortcutSettingsOpen, setShortcutSettingsOpen] = useState(false);
   const [eraserMenuOpen, setEraserMenuOpen] = useState(false);
   const [partialEraser, setPartialEraser] = useState(false);
   const [magicWand, setMagicWand] = useState(false);
+  const drawingPointer = useRef(null);
+  const queuedTool = useRef(null);
+  const [nudgeEnabled, setNudgeEnabled] = useState(false);
+  const bucketPointer = useRef(null);
+  const nudgeCursor = useRef(null);
+  const nudgePreview = useRef(null);
+  const nudge = useMemo(() => createNudge(apiRef, nudgeCursor, nudgePreview), []);
+  useEffect(() => () => nudge.cancel(), [nudge, nudgeEnabled]);
+  const brushKit = useBrushKit(apiRef, layerState, kind => {
+    setPartialEraser(kind === "partial");
+    setMagicWand(kind === "wand");
+    setNudgeEnabled(kind === "nudge");
+    bucketPointer.current = null;
+    eraseSessionRef.current = null;
+    setBrushPosition(null);
+  });
+  const bucketEnabled = brushKit.active?.type === "bucket";
+  const brushKitRef = useRef(brushKit);
+  brushKitRef.current = brushKit;
+  useEffect(() => {
+    const engine = makePaintEngine(paintCanvas, apiRef, (profile, original) => {
+      const state = layerState.current;
+      const id = original?.id ?? (state.focus || (state.mode === "manual" ? state.active :
+        state.items.find(item => item.tool === profile.name && item.visible && !item.locked && !item.archived)?.id));
+      const target = state.items.find(item => item.id === id);
+      return { id, allowed: !id || !!target && target.visible && !target.locked && !target.archived };
+    });
+    paintEngine.current = engine;
+    return () => { engine.close(); paintEngine.current = null; };
+  }, [layerState]);
+  useEffect(() => { paintEngine.current?.texture(brushKit.pen?.texture); }, [brushKit.pen?.texture]);
   const [brushSize, setBrushSize] = useState(32);
-  const [freeDrawWidth, setFreeDrawWidth] = useState(6);
   const [brushPosition, setBrushPosition] = useState(null);
   const [processingImage, setProcessingImage] = useState(false);
-  const [draggedFolderId, setDraggedFolderId] = useState(null);
-  const [draggedObjectId, setDraggedObjectId] = useState(null);
-  const [objectMenu, setObjectMenu] = useState(null);
-  const [libraryMenu, setLibraryMenu] = useState(null);
   const [libraryClipboard, setLibraryClipboard] = useState(null);
-  const [librarySelection, setLibrarySelection] = useState(null);
-  const [bulkEditing, setBulkEditing] = useState(false);
-  const [bulkObjectIds, setBulkObjectIds] = useState(() => new Set());
-  const [librarySearch, setLibrarySearch] = useState("");
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [backupMenuOpen, setBackupMenuOpen] = useState(false);
   const [backgroundImage, setBackgroundImage] = useState(null);
   const [backgroundScale, setBackgroundScale] = useState(100);
   const [backgroundColor, setBackgroundColor] = useState("#f2f2f7");
@@ -414,13 +385,11 @@ function App() {
   const partialStraightPromiseRef = useRef(null);
   const backgroundInputRef = useRef(null);
   const libraryImportRef = useRef(null);
-  const folderImportRef = useRef(null);
-  const folderImportTargetRef = useRef(null);
+  const materialImageInput = useRef(null);
+  const libraryActions = useRef(null);
+  const materialDrag = useRef(null);
   const activeToolRef = useRef("selection");
   const libraryWriteQueueRef = useRef(Promise.resolve());
-  const librarySaveTimerRef = useRef(null);
-  const materialBrushSessionRef = useRef(null);
-  const materialBrushFileIdsRef = useRef(new Map());
   const canvasWriteQueueRef = useRef(Promise.resolve());
   const canvasSaveTimerRef = useRef(null);
   const pendingCanvasPayloadRef = useRef(null);
@@ -430,7 +399,6 @@ function App() {
   const relationshipsRef = useRef({});
   const relationshipCollectionsRef = useRef({});
   const relationshipNamesRef = useRef({});
-  const relationshipHostRef = useRef(null);
 
   const zh = language === "zh-CN";
   const ui = zh ? {
@@ -448,50 +416,29 @@ function App() {
   };
 
   const current = useMemo(() => folderAt(library, path), [library, path]);
-  const folderOptions = useMemo(() => listFolders(library), [library]);
-  const librarySearchIndex = useMemo(() => indexLibraryObjects(library), [library]);
-  const normalizedLibrarySearch = librarySearch.trim();
-  const visibleFolders = useMemo(() => normalizedLibrarySearch ? [] : current.folders, [current.folders, normalizedLibrarySearch]);
-  const visibleObjectEntries = useMemo(() => normalizedLibrarySearch
-    ? librarySearchIndex.filter((entry) => entry.searchText.includes(normalizedLibrarySearch.toLocaleLowerCase()))
-    : current.objects.map((object) => ({ object, sourcePath: path, pathLabel: "" })), [current.objects, librarySearchIndex, normalizedLibrarySearch, path]);
-
   useEffect(() => {
+    if (!isOpen || libraryReady) return;
     let active = true;
-    const load = async () => {
-      try {
-        const saved = await readIndexedLibrary();
-        if (isValidLibrary(saved)) {
-          if (active) setLibrary(saved);
-        } else {
-          // A portable package can include materials-library.json. It is used once,
-          // only when this browser has no existing material library yet.
-          const bundled = await readBundledLibrary();
-          const legacy = bundled || loadLegacyLibrary();
-          await writeIndexedLibrary(legacy);
-          // Only discard the old small localStorage copy after IndexedDB has accepted it.
-          localStorage.removeItem(STORAGE_KEY);
-          if (active) setLibrary(legacy);
-        }
-      } catch {
-        window.alert(zh ? "本地素材库无法打开，请刷新页面后重试。" : "The local material library could not be opened. Please refresh and try again.");
-      } finally {
-        if (active) setLibraryReady(true);
-      }
-    };
-    void load();
+    setLibraryError("");
+    openMaterials().then(value => {
+      if (!active) return;
+      savedLibrary.current = value;
+      setLibrary(value);
+      setLibraryReady(true);
+    }).catch(() => { if (active) setLibraryError("素材库读取失败，关闭后重试。原有备份已保留。"); });
     return () => { active = false; };
-  }, []);
+  }, [isOpen, libraryReady]);
 
   useEffect(() => {
     let active = true;
     const loadCanvas = async () => {
       try {
-        const saved = await readIndexedCanvas();
+        const saved = project.scene;
         if (saved?.elements && active) {
           const migrated = migrateNativeElementLinks(saved.elements, saved.relationships || {});
           const cleanElements = withoutNativeLinks(saved.elements);
           setCanvasInitialData({ ...saved, elements: cleanElements, relationships: migrated.relationships });
+          setBackgroundColor(saved.appState?.viewBackgroundColor || "#f2f2f7");
           setRelationships(migrated.relationships);
           setRelationshipCollections(saved.relationshipCollections || {});
           setRelationshipNames(saved.relationshipNames || {});
@@ -505,9 +452,6 @@ function App() {
             relationshipCollections: saved.relationshipCollections || {},
             relationshipNames: saved.relationshipNames || {},
           });
-          if (migrated.changed || cleanElements.some((element, index) => element !== saved.elements[index])) {
-            await writeIndexedCanvas({ ...saved, elements: cleanElements, relationships: migrated.relationships, relationshipCollections: saved.relationshipCollections || {}, relationshipNames: saved.relationshipNames || {}, savedAt: Date.now() });
-          }
         }
       } catch {
         // An empty canvas is still usable if a prior local save is unavailable.
@@ -533,59 +477,109 @@ function App() {
 
   useEffect(() => {
     if (!libraryReady) return;
-    if (librarySaveTimerRef.current) window.clearTimeout(librarySaveTimerRef.current);
-    librarySaveTimerRef.current = window.setTimeout(() => {
-      libraryWriteQueueRef.current = libraryWriteQueueRef.current
-        .catch(() => undefined)
-        .then(() => writeIndexedLibrary(library))
-        .catch(() => {
-          window.alert(zh ? "素材库写入失败，当前改动未保存。" : "The material library could not be saved.");
-        });
-    }, 350);
-    return () => {
-      if (librarySaveTimerRef.current) window.clearTimeout(librarySaveTimerRef.current);
-    };
-  }, [library, libraryReady, zh]);
+    libraryWriteQueueRef.current = libraryWriteQueueRef.current.then(async () => {
+      if (savedLibrary.current === library) return;
+      try {
+        await saveLibrary(savedLibrary.current, library);
+        savedLibrary.current = library;
+        setLibraryError("");
+      } catch {
+        setLibraryError("素材改动未保存。可导出备份，或点击重试。");
+      }
+    });
+  }, [library, libraryReady]);
 
   useEffect(() => {
     localStorage.setItem(LANGUAGE_KEY, language);
   }, [language]);
 
   useEffect(() => {
-    const cancel = (event) => {
-      if (event.key !== "Escape") return;
-      setPlacing(null);
-      setMaterialBrush(null);
-      setMaterialBrushPicking(false);
-      setMaterialBrushDrawing(false);
-      materialBrushSessionRef.current = null;
+    let slotFrame = 0;
+    const activateTool = tool => {
+      const kit = brushKitRef.current;
+      if (typeof tool === "number") kit.activate(tool, false);
+      else kit.activateById(tool);
     };
-    window.addEventListener("keydown", cancel);
-    return () => window.removeEventListener("keydown", cancel);
-  }, []);
-
-  useEffect(() => {
     const onKeyDown = (event) => {
-      if (/INPUT|TEXTAREA/.test(event.target.tagName)) return;
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229 ||
+          event.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"]), dialog, [aria-modal="true"]')) return;
       if (["Escape", "Esc", "ESC"].includes(event.key)) {
-        setPartialEraser(false); setMagicWand(false); eraseSessionRef.current = null; straightLineAnchorRef.current = null; setBrushPosition(null);
-        setEraserMenuOpen(false); setLanguageMenuOpen(false); setBackupMenuOpen(false); setSearchOpen(false); setLibraryMenu(null); setObjectMenu(null); setBackgroundPanelOpen(false); setNameDialog(null); setRelationshipSourceId(null); setRelationshipMenuOpen(false);
-        document.querySelectorAll(".canvas-native-eraser-menu, .canvas-native-freedraw-menu").forEach((menu) => { menu.hidden = true; });
+        paintEngine.current?.cancel();
+        queuedTool.current = null;
+        bucketPointer.current = null;
+        placementRequest.current++; measureRef.current = null; setMeasureStatus(""); setPrecisionEditing(null); setPartialEraser(false); setMagicWand(false); nudge.cancel(); eraseSessionRef.current = null; straightLineAnchorRef.current = null; setBrushPosition(null);
+        setEraserMenuOpen(false); setLanguageMenuOpen(false); setBackgroundPanelOpen(false); setNameDialog(null); setRelationshipSourceId(null); setRelationshipMenuOpen(false);
         return;
       }
-      if (activeToolRef.current === "freedraw") {
-        if (event.key === "[") { event.preventDefault(); setFreeDrawWidth((size) => Math.max(0.5, size - 0.5)); }
-        if (event.key === "]") { event.preventDefault(); setFreeDrawWidth((size) => Math.min(24, size + 0.5)); }
+      if (event.ctrlKey || event.metaKey) return;
+      const kit = brushKitRef.current;
+      const consume = () => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      const shortcut = shortcutFromEvent(event);
+      const directTool = kit.shortcutForKey(shortcut) || kit.aliasForKey(shortcut);
+      const slot = event.altKey && !event.shiftKey && /^Digit[1-8]$/.test(event.code) ? Number(event.code.at(-1)) - 1 : null;
+      if (directTool || slot !== null) {
+        consume();
+        if (event.repeat) return;
+        const tool = directTool || slot;
+        if (drawingPointer.current !== null) queuedTool.current = tool;
+        else { cancelAnimationFrame(slotFrame); activateTool(tool); }
         return;
       }
-      if (!partialEraser) return;
-      if (event.key === "[") { event.preventDefault(); setBrushSize((size) => Math.max(4, size - 4)); }
-      if (event.key === "]") { event.preventDefault(); setBrushSize((size) => Math.min(240, size + 4)); }
+      if (isDefaultToolKey(shortcut)) { consume(); return; }
+      let handled = false;
+      if (event.altKey && !event.shiftKey && event.code === "KeyL" && kit.lineTarget) {
+        handled = event.repeat || kit.toggleLineStyle();
+      } else if (event.code === "BracketLeft" || event.code === "BracketRight") {
+        const direction = event.code === "BracketLeft" ? -1 : 1;
+        if (event.altKey && !event.shiftKey) handled = kit.adjust("dashDensity", direction * 5);
+        else if (!event.altKey && event.shiftKey) handled = kit.adjust("opacity", direction * 5);
+        else if (!event.altKey && !event.shiftKey) {
+          if (nudgeEnabled) { kit.setNudgeRadius(kit.settings.nudgeRadius + direction * 4); handled = true; }
+          else if (partialEraser) { setBrushSize(size => Math.min(240, Math.max(4, size + direction * 4))); handled = true; }
+          else handled = kit.adjust("width", direction * .5);
+        }
+      } else if (event.altKey && !event.shiftKey && (event.code === "Minus" || event.code === "Equal")) {
+        handled = kit.adjust("smoothing", event.code === "Minus" ? -5 : 5);
+      }
+      if (!handled) return;
+      consume();
+      const draft = apiRef.current?.getAppState().newElement;
+      const profile = kit.currentPen();
+      if (!kit.selection && draft && profile?.type === draft.type && hasLineStyle(draft.type) && !profile.engine) {
+        if (draft.type === "freedraw") strokeProfile.current = profile;
+        mutateElement(draft, {
+          strokeStyle: profile.strokeStyle, strokeWidth: profile.width, opacity: profile.opacity,
+          customData: { ...draft.customData, infiniteDashDensity: profile.dashDensity },
+        });
+      }
     };
-    window.addEventListener("keydown", onKeyDown);
+    const releaseSlot = event => {
+      if (drawingPointer.current !== event.pointerId) return;
+      drawingPointer.current = null;
+      const tool = queuedTool.current;
+      queuedTool.current = null;
+      if (tool !== null && event.type === "pointerup") slotFrame = requestAnimationFrame(() => activateTool(tool));
+    };
+    const clearPendingSlot = () => {
+      drawingPointer.current = null;
+      queuedTool.current = null;
+      cancelAnimationFrame(slotFrame);
+    };
     document.addEventListener("keydown", onKeyDown, true);
-    return () => { window.removeEventListener("keydown", onKeyDown); document.removeEventListener("keydown", onKeyDown, true); };
-  }, [partialEraser]);
+    window.addEventListener("pointerup", releaseSlot, true);
+    window.addEventListener("pointercancel", releaseSlot, true);
+    window.addEventListener("blur", clearPendingSlot);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("pointerup", releaseSlot, true);
+      window.removeEventListener("pointercancel", releaseSlot, true);
+      window.removeEventListener("blur", clearPendingSlot);
+      cancelAnimationFrame(slotFrame);
+    };
+  }, [partialEraser, nudgeEnabled, nudge]);
 
   useEffect(() => {
     const endPreciseLine = (event) => {
@@ -611,14 +605,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    apiRef.current?.updateScene({ appState: { currentItemStrokeWidth: freeDrawWidth } });
-    const slider = document.querySelector("[data-canvas-freedraw-width]");
-    const input = document.querySelector("[data-canvas-freedraw-number]");
-    if (slider) slider.value = String(freeDrawWidth);
-    if (input) input.value = String(freeDrawWidth);
-  }, [freeDrawWidth]);
-
-  useEffect(() => {
     apiRef.current?.updateScene({ appState: { viewBackgroundColor: backgroundImage ? "transparent" : backgroundColor } });
     const control = document.querySelector("[data-canvas-background-scale]");
     if (control) { control.value = String(backgroundScale); control.style.display = backgroundImage ? "block" : "none"; }
@@ -626,67 +612,6 @@ function App() {
 
   useEffect(() => {
     const mountNativeExtensions = () => {
-      const toolbar = document.querySelector(".excalidraw .App-toolbar .Stack") || document.querySelector(".excalidraw .App-toolbar");
-      if (toolbar && !toolbar.querySelector("[data-canvas-language]")) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.dataset.canvasLanguage = "true";
-        button.className = "canvas-native-language";
-        button.textContent = language === "zh-CN" ? "中文" : "EN";
-        button.title = language === "zh-CN" ? "切换至 English" : "Switch to 中文";
-        button.setAttribute("aria-label", button.title);
-        button.addEventListener("click", () => {
-          const next = button.textContent === "中文" ? "en" : "zh-CN";
-          setLanguage(next);
-          button.textContent = next === "zh-CN" ? "中文" : "EN";
-          button.title = next === "zh-CN" ? "切换至 English" : "Switch to 中文";
-          button.setAttribute("aria-label", button.title);
-        });
-        toolbar.append(button);
-      }
-      const eraser = document.querySelector(".excalidraw [data-testid='toolbar-eraser']")?.closest("label") || document.querySelector(".excalidraw button[title*='Eraser']")?.closest("label");
-      if (eraser && !eraser.querySelector("[data-canvas-eraser-menu]")) {
-        eraser.style.position = "relative";
-        const wrapper = document.createElement("span"); wrapper.dataset.canvasEraserMenu = "true"; wrapper.className = "canvas-native-eraser";
-        const button = document.createElement("button"); button.type = "button"; button.className = "canvas-native-eraser-trigger"; button.textContent = "⌄"; button.title = zh ? "更多橡皮工具" : "More eraser tools";
-        const menu = document.createElement("div"); menu.className = "canvas-native-eraser-menu"; menu.hidden = true;
-        const activatePixelTool = (kind) => {
-          document.querySelector(".excalidraw [data-testid='toolbar-selection']")?.click();
-          eraseSessionRef.current = null; setBrushPosition(null);
-          setPartialEraser(kind === "partial"); setMagicWand(kind === "wand");
-        };
-        [[ui.partialEraser, "⌫", () => activatePixelTool("partial")], [ui.magicWand, "✦", () => activatePixelTool("wand")]].forEach(([label, icon, action]) => {
-          const item = document.createElement("button"); item.type = "button"; item.className = "canvas-native-eraser-option"; item.textContent = icon; item.title = label; item.setAttribute("aria-label", label); item.addEventListener("click", (event) => { event.stopPropagation(); action(); menu.hidden = true; }); menu.append(item);
-        });
-        button.addEventListener("click", (event) => { event.preventDefault(); event.stopPropagation(); menu.hidden = !menu.hidden; }); wrapper.append(button, menu); eraser.append(wrapper);
-      }
-      const freeDraw = document.querySelector(".excalidraw [data-testid='toolbar-freedraw']")?.closest("label");
-      if (freeDraw && !freeDraw.querySelector("[data-canvas-freedraw-menu]")) {
-        freeDraw.style.position = "relative";
-        const wrapper = document.createElement("span"); wrapper.dataset.canvasFreedrawMenu = "true"; wrapper.className = "canvas-native-freedraw";
-        const button = document.createElement("button"); button.type = "button"; button.className = "canvas-native-freedraw-trigger"; button.textContent = "⌄"; button.title = zh ? "笔刷预设" : "Brush presets";
-        const menu = document.createElement("div"); menu.className = "canvas-native-freedraw-menu"; menu.hidden = true;
-        const activateBrush = (width, opacity) => {
-          setFreeDrawWidth(width);
-          apiRef.current?.updateScene({ appState: { currentItemStrokeWidth: width, currentItemOpacity: opacity, activeTool: { type: "freedraw" } } });
-          document.querySelector(".excalidraw [data-testid='toolbar-freedraw']")?.click();
-        };
-        [[zh ? "铅笔" : "Pencil", "✎", 2, 100], [zh ? "钢笔" : "Pen", "✒", 3, 100], [zh ? "马克笔" : "Marker", "▰", 14, 45]].forEach(([label, icon, width, opacity]) => {
-          const item = document.createElement("button"); item.type = "button"; item.className = "canvas-native-freedraw-option"; item.textContent = icon; item.title = label; item.setAttribute("aria-label", label); item.addEventListener("click", (event) => { event.stopPropagation(); activateBrush(width, opacity); menu.hidden = true; }); menu.append(item);
-        });
-        button.addEventListener("click", (event) => { event.preventDefault(); event.stopPropagation(); menu.hidden = !menu.hidden; }); wrapper.append(button, menu); freeDraw.append(wrapper);
-      }
-      const nativeWidthInputs = [...document.querySelectorAll(".excalidraw input[name='stroke-width']")];
-      const nativeWidthPanel = nativeWidthInputs[0]?.parentElement?.parentElement;
-      if (nativeWidthPanel && !nativeWidthPanel.parentElement?.querySelector("[data-canvas-freedraw-width]")) {
-        nativeWidthPanel.style.display = "none";
-        const control = document.createElement("div"); control.className = "canvas-freedraw-width";
-        const slider = document.createElement("input"); slider.type = "range"; slider.min = "0.5"; slider.max = "24"; slider.step = "0.5"; slider.value = String(freeDrawWidth); slider.dataset.canvasFreedrawWidth = "true"; slider.title = zh ? "描边宽度（[ ] 调整）" : "Stroke width ([ ])";
-        const number = document.createElement("input"); number.type = "number"; number.min = "0.5"; number.max = "24"; number.step = "0.5"; number.value = String(freeDrawWidth); number.dataset.canvasFreedrawNumber = "true"; number.title = zh ? "输入笔刷大小" : "Enter brush size";
-        const setWidth = (value) => { const width = Math.max(0.5, Math.min(24, Number(value) || 0.5)); slider.value = String(width); number.value = String(width); setFreeDrawWidth(width); };
-        slider.addEventListener("input", (event) => setWidth(event.target.value)); number.addEventListener("input", (event) => setWidth(event.target.value)); number.addEventListener("change", (event) => setWidth(event.target.value));
-        control.append(slider, number); nativeWidthPanel.after(control);
-      }
       document.querySelectorAll(".excalidraw .color-picker__top-picks").forEach((picks) => {
         if (picks.querySelector("[data-canvas-background-image]")) return;
         const ancestors = [picks, picks.parentElement, picks.parentElement?.parentElement, picks.parentElement?.parentElement?.parentElement, picks.parentElement?.parentElement?.parentElement?.parentElement];
@@ -708,25 +633,10 @@ function App() {
           if (crop) crop.after(button); else menu.append(button);
         }
       });
-      if (!relationshipHostRef.current?.isConnected) {
-        const nativeLinkButton = [...document.querySelectorAll(".excalidraw button")].find((button) => {
-          if (button.closest(".context-menu") || button.closest("[data-canvas-relationship-host]")) return false;
-          const label = `${button.getAttribute("aria-label") || ""} ${button.title || ""}`;
-          return /(?:新建|创建|添加|编辑)?链接|(?:create|edit|add)\s+link/i.test(label);
-        });
-        if (nativeLinkButton?.parentElement) {
-          const host = document.createElement("span");
-          host.dataset.canvasRelationshipHost = "true";
-          host.className = "canvas-native-relationship-host";
-          nativeLinkButton.after(host);
-          relationshipHostRef.current = host;
-          setRelationshipHost(host);
-        }
-      }
     };
     const observer = new MutationObserver(mountNativeExtensions);
     const refreshOnContextMenu = () => window.setTimeout(mountNativeExtensions, 0);
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.querySelector(".canvas-shell"), { childList: true, subtree: true });
     document.addEventListener("contextmenu", refreshOnContextMenu);
     mountNativeExtensions();
     return () => { observer.disconnect(); document.removeEventListener("contextmenu", refreshOnContextMenu); };
@@ -747,75 +657,67 @@ function App() {
       return;
     }
     const sceneFiles = api.getFiles();
-    const files = Object.fromEntries(elements
-      .filter((element) => element.type === "image" && element.fileId && sceneFiles[element.fileId])
-      .map((element) => [element.fileId, storedFile(sceneFiles[element.fileId])])) ;
-    const preview = await thumbnail(elements, sceneFiles);
+    const files = Object.fromEntries([...sceneImageFileIds(elements)].filter(id => sceneFiles[id]).map(id => [id, storedFile(sceneFiles[id])]));
     setNameInput(zh ? `素材 ${current.objects.length + 1}` : `Material ${current.objects.length + 1}`);
-    setNameDialog({ type: "object", elements, files, preview });
+    setNameDialog({ type: "object", elements: layerSafeElements(elements), files });
   }, [current.objects.length, path, ui.selectFirst, zh]);
 
-  const deleteFolder = useCallback((id, name) => {
-    if (!window.confirm(zh ? `删除“${name}”及其全部内容？` : `Delete “${name}” and everything inside it?`)) return;
-    setLibrary((root) => removeFolderById(root, id));
-  }, [zh]);
-
-  const moveFolder = useCallback((sourceId, targetId) => {
-    if (!sourceId || sourceId === targetId) return;
+  const moveFolder = (sourceId, targetId) => {
+    const location = root => {
+      const source = findFolderPath(root, sourceId);
+      const target = targetId === null ? [] : findFolderPath(root, targetId);
+      if (!source || !target || target.includes(sourceId) || (source.at(-2) ?? null) === targetId) return null;
+      return { source, target };
+    };
+    const destination = location(library);
+    if (!destination) return false;
     setLibrary((root) => {
-      const source = findFolder(root, sourceId);
-      if (!source || containsFolder(source, targetId)) return root;
-      const withoutSource = removeFolderById(root, sourceId);
-      return updateFolderById(withoutSource, targetId, (target) => ({
-        ...target,
-        folders: [...target.folders, source],
+      const routes = location(root);
+      if (!routes) return root;
+      const moved = folderAt(root, routes.source);
+      const withoutSource = updateFolder(root, routes.source.slice(0, -1), parent => ({
+        ...parent, folders: parent.folders.filter(folder => folder.id !== sourceId),
       }));
+      return updateFolder(withoutSource, routes.target, target => ({ ...target, folders: [...target.folders, moved] }));
     });
-  }, []);
+    const openIndex = path.indexOf(sourceId);
+    if (openIndex !== -1) setPath([...destination.target, ...path.slice(openIndex)]);
+    return true;
+  };
 
-  const transferObject = useCallback((objectId, targetId, copy = false) => {
-    const object = current.objects.find((item) => item.id === objectId);
-    if (!object || !targetId) return;
-    setLibrary((root) => {
-      let next = copy ? root : updateFolder(root, path, (folder) => ({ ...folder, objects: folder.objects.filter((item) => item.id !== objectId) }));
-      const transferred = copy ? { ...object, id: crypto.randomUUID(), name: `${object.name} ${zh ? "副本" : "copy"}` } : object;
-      next = updateFolderById(next, targetId, (folder) => ({ ...folder, objects: [...folder.objects, transferred] }));
-      return next;
+  const transferObject = (entry, targetId) => {
+    setLibrary(root => {
+      if (!findFolder(root, targetId) || entry.path.at(-1) === targetId) return root;
+      const object = folderAt(root, entry.path).objects.find(item => item.id === entry.item.id);
+      if (!object) return root;
+      const next = updateFolder(root, entry.path, folder => ({ ...folder, objects: folder.objects.filter(item => item.id !== object.id) }));
+      return updateFolderById(next, targetId, folder => ({ ...folder, objects: [...folder.objects, object] }));
     });
-    setLibraryMenu(null); setDraggedObjectId(null);
-  }, [current.objects, path, zh]);
+  };
 
-  const renameObject = useCallback((object, sourcePath = path) => {
-    setNameInput(object.name);
-    setNameDialog({ type: "rename-object", id: object.id, sourcePath });
-  }, [path]);
-
-  const renameFolder = useCallback((folder) => {
-    setNameInput(folder.name);
-    setNameDialog({ type: "rename-folder", id: folder.id });
-  }, []);
-
-  const cloneLibraryFolder = useCallback((folder) => ({
+  const cloneLibraryFolder = useCallback((folder, name = folder.name) => ({
     ...folder,
     id: crypto.randomUUID(),
-    name: `${folder.name} ${zh ? "副本" : "copy"}`,
-    folders: folder.folders.map(cloneLibraryFolder),
+    name,
+    folders: folder.folders.map(child => cloneLibraryFolder(child)),
     objects: folder.objects.map((object) => ({ ...object, id: crypto.randomUUID() })),
-  }), [zh]);
+  }), []);
 
-  const copyLibraryItem = useCallback((type, item, cut = false, sourcePath = path) => {
-    setLibraryClipboard({ type, item, cut, sourcePath, sourceId: item.id });
-    setLibrarySelection({ type, id: item.id });
-    setLibraryMenu(null);
-  }, [path]);
+  const copyLibraryItem = (type, entry, cut) => {
+    setLibraryClipboard({ type, item: entry.item, cut, sourcePath: entry.path, sourceId: entry.item.id });
+  };
 
   const pasteLibraryItem = useCallback(() => {
     if (!libraryClipboard) return;
     if (libraryClipboard.type === "folder" && libraryClipboard.cut && path.includes(libraryClipboard.sourceId)) return;
     setLibrary((root) => {
-      const item = libraryClipboard.type === "folder"
-        ? (libraryClipboard.cut ? libraryClipboard.item : cloneLibraryFolder(libraryClipboard.item))
-        : (libraryClipboard.cut ? libraryClipboard.item : { ...libraryClipboard.item, id: crypto.randomUUID(), name: `${libraryClipboard.item.name} ${zh ? "副本" : "copy"}` });
+      const source = libraryClipboard.type === "folder" ? findFolder(root, libraryClipboard.sourceId)
+        : folderAt(root, libraryClipboard.sourcePath).objects.find(object => object.id === libraryClipboard.sourceId);
+      if (!source) return root;
+      const name = `${source.name} ${zh ? "副本" : "copy"}`;
+      const item = libraryClipboard.cut ? source : libraryClipboard.type === "folder"
+        ? cloneLibraryFolder(source, name)
+        : { ...source, id: crypto.randomUUID(), name };
       let next = root;
       if (libraryClipboard.cut) {
         next = libraryClipboard.type === "folder"
@@ -827,29 +729,7 @@ function App() {
         : { ...folder, objects: [...folder.objects, item] });
     });
     if (libraryClipboard.cut) setLibraryClipboard(null);
-    setLibraryMenu(null);
   }, [cloneLibraryFolder, libraryClipboard, path, zh]);
-
-  useEffect(() => {
-    const shortcuts = (event) => {
-      if (!isOpen || /INPUT|TEXTAREA/.test(event.target.tagName) || !(event.ctrlKey || event.metaKey)) return;
-      const key = event.key.toLowerCase();
-      if ((key === "c" || key === "x") && librarySelection) {
-        const item = librarySelection.type === "folder"
-          ? current.folders.find((folder) => folder.id === librarySelection.id)
-          : current.objects.find((object) => object.id === librarySelection.id);
-        if (item) {
-          event.preventDefault();
-          copyLibraryItem(librarySelection.type, item, key === "x");
-        }
-      } else if (key === "v" && libraryClipboard) {
-        event.preventDefault();
-        pasteLibraryItem();
-      }
-    };
-    window.addEventListener("keydown", shortcuts);
-    return () => window.removeEventListener("keydown", shortcuts);
-  }, [copyLibraryItem, current, isOpen, libraryClipboard, librarySelection, pasteLibraryItem]);
 
   const chooseBackgroundImage = useCallback((event) => {
     const file = event.target.files?.[0];
@@ -906,13 +786,15 @@ function App() {
       strokeColor: appState.currentItemStrokeColor,
       backgroundColor: "transparent",
       fillStyle: appState.currentItemFillStyle,
-      strokeWidth: appState.currentItemStrokeWidth || freeDrawWidth,
+      strokeWidth: appState.currentItemStrokeWidth || 3,
       strokeStyle: appState.currentItemStrokeStyle,
       roughness: appState.currentItemRoughness,
       opacity: appState.currentItemOpacity,
     }], { regenerateIds: true });
+    const profile = brushKitRef.current.mode.current;
+    if (profile.strokeStyle === "dashed") mutateElement(line, { strokeStyle: "dashed", customData: { infiniteDashDensity: profile.dashDensity } }, false);
     api.updateScene({ elements: [...api.getSceneElements(), line] });
-  }, [freeDrawWidth]);
+  }, []);
 
   const removeAnchorDot = useCallback(() => {
     const id = straightLineAnchorRef.current?.elementId;
@@ -1011,12 +893,15 @@ function App() {
     if (!name || !nameDialog) return;
     if (nameDialog.type === "folder") {
       setLibrary((root) => updateFolder(root, path, (folder) => ({
-        ...folder, folders: [...folder.folders, makeFolder(name)],
+        ...folder, folders: [...folder.folders, { ...makeFolder(name), description: nameDialog.description?.trim() || "" }],
       })));
     } else if (nameDialog.type === "rename-object") {
-      setLibrary((root) => updateFolder(root, nameDialog.sourcePath || path, (folder) => ({ ...folder, objects: folder.objects.map((item) => item.id === nameDialog.id ? { ...item, name } : item) })));
+      const tags = [...new Set((nameDialog.tags || "").split(/[,，]/).map(tag => tag.trim()).filter(Boolean))];
+      setLibrary(root => updateFolder(root, nameDialog.path, folder => ({
+        ...folder, objects: folder.objects.map(item => item.id === nameDialog.id ? { ...item, name, tags } : item),
+      })));
     } else if (nameDialog.type === "rename-folder") {
-      setLibrary((root) => updateFolderById(root, nameDialog.id, (folder) => ({ ...folder, name })));
+      setLibrary(root => updateFolderById(root, nameDialog.id, folder => ({ ...folder, name, description: nameDialog.description?.trim() || "" })));
     } else if (nameDialog.type === "rename-canvas-node") {
       setRelationshipNames((currentNames) => {
         const next = { ...currentNames, [nameDialog.id]: name };
@@ -1028,121 +913,39 @@ function App() {
         if (api) saveCanvas(api.getSceneElements(), api.getAppState(), api.getFiles());
       }, 0);
     } else {
+      const material = packMaterial({ id: crypto.randomUUID(), name, elements: nameDialog.elements, files: nameDialog.files });
       setLibrary((root) => updateFolder(root, path, (folder) => ({
         ...folder,
-        objects: [...folder.objects, {
-          id: crypto.randomUUID(), name,
-          elements: nameDialog.elements, files: nameDialog.files, preview: nameDialog.preview,
-        }],
+        objects: [...folder.objects, material],
       })));
     }
     setNameDialog(null);
   }, [nameDialog, nameInput, path]);
 
-  const beginPlacement = useCallback((object) => {
-    setMaterialBrush(null);
-    setPlacing(object);
-    setIsOpen(false);
-  }, []);
-
-  const createMaterialStamp = useCallback((object, centerX, centerY, scale = 1, rotation = 0, reuseImageFile = false) => {
-    if (object.kind === "image") {
-      let fileId = reuseImageFile ? materialBrushFileIdsRef.current.get(object.id) : null;
-      const files = [];
-      if (!fileId) {
-        fileId = crypto.randomUUID();
-        files.push({ id: fileId, dataURL: object.imageData, mimeType: "image/png", created: Date.now() });
-        if (reuseImageFile) materialBrushFileIdsRef.current.set(object.id, fileId);
-      }
-      const width = Math.max(1, object.width * scale);
-      const height = Math.max(1, object.height * scale);
-      const [element] = convertToExcalidrawElements([{
-        type: "image", fileId, x: centerX - width / 2, y: centerY - height / 2, width, height,
-      }], { regenerateIds: true });
-      return { elements: [{ ...element, angle: rotation }], files };
-    }
-    const source = object.elements || [];
-    if (!source.length) return { elements: [], files: [] };
-    const minX = Math.min(...source.map((element) => element.x));
-    const minY = Math.min(...source.map((element) => element.y));
-    const maxX = Math.max(...source.map((element) => element.x + element.width));
-    const maxY = Math.max(...source.map((element) => element.y + element.height));
-    const groupCenterX = (minX + maxX) / 2;
-    const groupCenterY = (minY + maxY) / 2;
-    const cosine = Math.cos(rotation);
-    const sine = Math.sin(rotation);
-    const elements = source.map((element) => {
-      const width = Math.max(0.1, element.width * scale);
-      const height = Math.max(0.1, element.height * scale);
-      const relativeX = (element.x + element.width / 2 - groupCenterX) * scale;
-      const relativeY = (element.y + element.height / 2 - groupCenterY) * scale;
-      const rotatedX = relativeX * cosine - relativeY * sine;
-      const rotatedY = relativeX * sine + relativeY * cosine;
-      return {
-        ...element,
-        id: crypto.randomUUID(),
-        seed: Math.floor(Math.random() * 2 ** 31),
-        x: centerX + rotatedX - width / 2,
-        y: centerY + rotatedY - height / 2,
-        width,
-        height,
-        points: Array.isArray(element.points) ? element.points.map((point) => [point[0] * scale, point[1] * scale]) : element.points,
-        fontSize: Number.isFinite(element.fontSize) ? Math.max(1, element.fontSize * scale) : element.fontSize,
-        angle: (element.angle || 0) + rotation,
-        boundElements: null,
-        frameId: null,
-        groupIds: [],
-      };
-    });
-    return { elements, files: Object.values(object.files || {}) };
-  }, []);
-
-  const stampMaterialBrush = useCallback((points) => {
+  const placeMaterial = async (object, clientX, clientY) => {
     const api = apiRef.current;
-    if (!api || !materialBrush || !points.length) return;
-    const additions = [];
-    const files = new Map();
-    points.forEach((point) => {
-      const randomScale = 1 + ((Math.random() * 2 - 1) * materialBrushSettings.randomSize / 100);
-      const scale = Math.max(0.05, materialBrushSettings.size / 100 * randomScale);
-      const rotation = (Math.random() * 2 - 1) * materialBrushSettings.randomRotation * Math.PI / 180;
-      const stamp = createMaterialStamp(materialBrush, point.x, point.y, scale, rotation, true);
-      additions.push(...stamp.elements);
-      stamp.files.forEach((file) => files.set(file.id, file));
-    });
-    if (files.size) api.addFiles([...files.values()]);
-    if (additions.length) api.updateScene({ elements: [...api.getSceneElements(), ...additions] });
-  }, [createMaterialStamp, materialBrush, materialBrushSettings]);
-
-  const activateMaterialBrush = useCallback((object) => {
-    setPlacing(null);
-    setMaterialBrush(object);
-    setMaterialBrushPicking(false);
-    setMaterialBrushDrawing(false);
-    materialBrushSessionRef.current = null;
-    materialBrushFileIdsRef.current.clear();
-    setLibraryMenu(null);
-    setObjectMenu(null);
-    setIsOpen(false);
-    apiRef.current?.setActiveTool?.({ type: "selection" });
-  }, []);
-
-  const confirmPlacement = useCallback((event) => {
-    if (!placing || !apiRef.current) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const api = apiRef.current;
+    if (!api) return;
+    const request = ++placementRequest.current;
+    let placing;
+    try { placing = await materialData(object); }
+    catch { setLibraryError("无法读取此素材，请检查备份。"); return; }
+    if (request !== placementRequest.current || api !== apiRef.current) return;
     const state = api.getAppState();
-    const x = (event.clientX - state.offsetLeft) / state.zoom.value - state.scrollX;
-    const y = (event.clientY - state.offsetTop) / state.zoom.value - state.scrollY;
+    const x = (clientX - state.offsetLeft) / state.zoom.value - state.scrollX;
+    const y = (clientY - state.offsetTop) / state.zoom.value - state.scrollY;
+    api.setActiveTool({ type: "selection" });
+    const insert = elements => api.updateScene({
+      elements: [...api.getSceneElementsIncludingDeleted(), ...elements],
+      appState: { selectedElementIds: Object.fromEntries(elements.map(element => [element.id, true])) },
+      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+    });
     if (placing.kind === "image") {
       const fileId = crypto.randomUUID();
-      api.addFiles([{ id: fileId, dataURL: placing.imageData, mimeType: "image/png", created: Date.now() }]);
+      api.addFiles([{ id: fileId, dataURL: placing.imageData, mimeType: placing.imageData.match(/^data:([^;,]+)/)?.[1] || "image/png", created: Date.now() }]);
       const [imageElement] = convertToExcalidrawElements([{
-        type: "image", fileId, x, y, width: placing.width, height: placing.height,
+        type: "image", fileId, status: "saved", x, y, width: placing.width, height: placing.height,
       }], { regenerateIds: true });
-      api.updateScene({ elements: [...api.getSceneElements(), imageElement] });
-      setPlacing(null);
+      insert([imageElement]);
       return;
     }
     if (placing.files && Object.keys(placing.files).length) {
@@ -1150,31 +953,25 @@ function App() {
     }
     const minX = Math.min(...placing.elements.map((element) => element.x));
     const minY = Math.min(...placing.elements.map((element) => element.y));
-    const cloned = placing.elements.map((element) => ({
+    const ids = new Map(placing.elements.map(element => [element.id, crypto.randomUUID()]));
+    const groups = new Map();
+    const binding = value => value && ids.has(value.elementId) ? { ...value, elementId: ids.get(value.elementId) } : null;
+    const cloned = placing.elements.map(element => ({
       ...element,
-      id: crypto.randomUUID(),
-      seed: Math.floor(Math.random() * 2 ** 31),
+      id: ids.get(element.id),
       x: element.x + x - minX,
       y: element.y + y - minY,
-      boundElements: null,
-      frameId: null,
+      groupIds: (element.groupIds || []).map(id => {
+        if (!groups.has(id)) groups.set(id, crypto.randomUUID());
+        return groups.get(id);
+      }),
+      boundElements: element.boundElements?.filter(item => ids.has(item.id)).map(item => ({ ...item, id: ids.get(item.id) })) || null,
+      frameId: ids.get(element.frameId) || null,
+      ...(element.type === "text" && { containerId: ids.get(element.containerId) || null }),
+      ...(["arrow", "line"].includes(element.type) && { startBinding: binding(element.startBinding), endBinding: binding(element.endBinding) }),
     }));
-    api.updateScene({ elements: [...api.getSceneElements(), ...cloned] });
-    setPlacing(null);
-  }, [placing]);
-
-  const removeObject = useCallback((id, sourcePath = path) => {
-    setLibrary((root) => updateFolder(root, sourcePath, (folder) => ({
-      ...folder, objects: folder.objects.filter((object) => object.id !== id),
-    })));
-  }, [path]);
-
-  const deleteLibraryItem = useCallback((type, item, sourcePath = path) => {
-    if (type === "folder") deleteFolder(item.id, item.name);
-    else removeObject(item.id, sourcePath);
-    setLibraryMenu(null);
-    setLibrarySelection(null);
-  }, [deleteFolder, path, removeObject]);
+    insert(cloned);
+  };
 
   const flushCanvasSave = useCallback(() => {
     if (canvasSaveTimerRef.current) {
@@ -1182,25 +979,38 @@ function App() {
       canvasSaveTimerRef.current = null;
     }
     const payload = pendingCanvasPayloadRef.current;
-    if (!payload) return;
+    if (!payload) return canvasWriteQueueRef.current;
     pendingCanvasPayloadRef.current = null;
     canvasWriteQueueRef.current = canvasWriteQueueRef.current
       .catch(() => undefined)
-      .then(() => writeIndexedCanvas(payload))
-      .catch(() => undefined);
-  }, []);
+      .then(() => saveProjectScene(project.id, payload))
+      .catch(error => {
+        pendingCanvasPayloadRef.current ??= payload;
+        setSaveError("画布未保存，请重试或导出项目备份。");
+        throw error;
+      });
+    return canvasWriteQueueRef.current;
+  }, [project.id]);
 
   const saveCanvas = useCallback((elements, appState, files) => {
+    const referenced = sceneImageFileIds(elements);
     const payload = {
       elements,
-      files: files || apiRef.current?.getFiles?.() || {},
-      appState: { viewBackgroundColor: appState.viewBackgroundColor || "#f2f2f7" },
+      files: Object.fromEntries([...referenced].flatMap(id => {
+        const file = (files || apiRef.current?.getFiles?.())?.[id];
+        return file ? [[id, file]] : [];
+      })),
+      appState: { viewBackgroundColor: brushKitRef.current.samplingBackground.current ?? (appState.viewBackgroundColor || "#f2f2f7") },
       relationships: relationshipsRef.current,
       relationshipCollections: relationshipCollectionsRef.current,
       relationshipNames: relationshipNamesRef.current,
+      precision: precisionRef.current,
+      layers: { ...layerState.current, focus: null },
       savedAt: Date.now(),
     };
     const signature = JSON.stringify({
+      precision: payload.precision,
+      layers: payload.layers,
       elements: elements.map((element) => [element.id, element.version, element.isDeleted]),
       files: Object.keys(payload.files).sort(),
       background: payload.appState.viewBackgroundColor,
@@ -1212,17 +1022,18 @@ function App() {
     canvasSignatureRef.current = signature;
     pendingCanvasPayloadRef.current = payload;
     if (canvasSaveTimerRef.current) window.clearTimeout(canvasSaveTimerRef.current);
-    canvasSaveTimerRef.current = window.setTimeout(flushCanvasSave, 450);
-  }, [flushCanvasSave]);
+    canvasSaveTimerRef.current = window.setTimeout(() => { void flushCanvasSave().catch(() => {}); }, 450);
+  }, [flushCanvasSave, layerState]);
+  layers.save.current = saveCanvas;
 
   useEffect(() => {
-    const flush = () => flushCanvasSave();
+    const flush = () => { void flushCanvasSave().catch(() => {}); };
     window.addEventListener("pagehide", flush);
     document.addEventListener("visibilitychange", flush);
     return () => {
       window.removeEventListener("pagehide", flush);
       document.removeEventListener("visibilitychange", flush);
-      flushCanvasSave();
+      flush();
     };
   }, [flushCanvasSave]);
 
@@ -1397,45 +1208,11 @@ function App() {
     focusRelationshipTarget(targetId);
   }, [addRelationship, focusRelationshipTarget]);
 
-  useEffect(() => {
-    const deleteShortcut = (event) => {
-      if (!isOpen || /INPUT|TEXTAREA/.test(event.target.tagName) || !librarySelection || !["Delete", "Backspace"].includes(event.key)) return;
-      const item = librarySelection.type === "folder"
-        ? current.folders.find((folder) => folder.id === librarySelection.id)
-        : current.objects.find((object) => object.id === librarySelection.id);
-      if (item) {
-        event.preventDefault();
-        deleteLibraryItem(librarySelection.type, item);
-      }
-    };
-    window.addEventListener("keydown", deleteShortcut);
-    return () => window.removeEventListener("keydown", deleteShortcut);
-  }, [current, deleteLibraryItem, isOpen, librarySelection]);
-
-  const toggleBulkObject = useCallback((id) => {
-    setBulkObjectIds((ids) => {
-      const next = new Set(ids);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const deleteBulkObjects = useCallback(() => {
-    if (!bulkObjectIds.size) return;
-    if (!window.confirm(zh ? `删除选中的 ${bulkObjectIds.size} 个素材？` : `Delete ${bulkObjectIds.size} selected materials?`)) return;
-    setLibrary((root) => updateFolder(root, path, (folder) => ({ ...folder, objects: folder.objects.filter((object) => !bulkObjectIds.has(object.id)) })));
-    setBulkObjectIds(new Set());
-  }, [bulkObjectIds, path, zh]);
-
-  const exportLibrary = useCallback(() => {
-    const payload = JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), library });
-    const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `无限画布素材库-${new Date().toISOString().slice(0, 10)}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-    setBackupMenuOpen(false);
+  const exportLibrary = useCallback(async () => {
+    try {
+      downloadJSON({ version: 1, exportedAt: new Date().toISOString(), library: await exportTree(library) },
+        `无限画布素材库-${new Date().toISOString().slice(0, 10)}.json`);
+    } catch { setLibraryError("素材备份导出失败。"); }
   }, [library]);
 
   const importLibrary = useCallback(async (event) => {
@@ -1445,78 +1222,24 @@ function App() {
       const payload = JSON.parse(await file.text());
       const next = payload.library || payload;
       if (!Array.isArray(next.folders) || !Array.isArray(next.objects)) throw new Error("invalid library");
+      if (payload.type === "infinite-canvas-material-pack") {
+        const pack = packLibrary(cloneLibraryFolder(next));
+        setLibrary(root => updateFolder(root, path, folder => ({ ...folder, folders: [...folder.folders, pack] })));
+        return;
+      }
       if (!window.confirm(zh ? "导入会替换当前素材库，是否继续？" : "Importing will replace the current material library. Continue?")) return;
-      setLibrary(next);
+      setLibrary(packLibrary(next));
       setPath([]);
-      setBulkObjectIds(new Set());
     } catch {
       window.alert(zh ? "素材库文件无效，无法导入。" : "This material library file is invalid.");
     } finally {
       event.target.value = "";
-      setBackupMenuOpen(false);
     }
-  }, [zh]);
-
-  const exportFolder = useCallback((folder) => {
-    const payload = JSON.stringify({
-      type: "infinite-canvas-material-folder",
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      folder,
-    });
-    const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${safeDownloadName(folder.name)}-素材文件夹.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-    setLibraryMenu(null);
-  }, []);
-
-  const chooseFolderImport = useCallback((targetFolderId = null) => {
-    folderImportTargetRef.current = targetFolderId;
-    folderImportRef.current?.click();
-    setBackupMenuOpen(false);
-    setLibraryMenu(null);
-  }, []);
-
-  const importFolder = useCallback(async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    try {
-      const payload = JSON.parse(await file.text());
-      if (payload?.type !== "infinite-canvas-material-folder" || !isValidLibraryFolder(payload.folder)) {
-        throw new Error("invalid folder package");
-      }
-      const importedFolder = cloneImportedFolder(payload.folder);
-      const targetFolderId = folderImportTargetRef.current;
-      setLibrary((root) => targetFolderId
-        ? updateFolderById(root, targetFolderId, (folder) => ({ ...folder, folders: [...folder.folders, importedFolder] }))
-        : updateFolder(root, path, (folder) => ({ ...folder, folders: [...folder.folders, importedFolder] })));
-      setLibrarySearch("");
-      window.alert(zh
-        ? `已导入文件夹“${importedFolder.name}”，原素材库内容保持不变。`
-        : `Imported “${importedFolder.name}”. The existing library was not changed.`);
-    } catch {
-      window.alert(zh ? "素材文件夹文件无效，无法导入。" : "This material folder file is invalid.");
-    } finally {
-      event.target.value = "";
-      folderImportTargetRef.current = null;
-    }
-  }, [path, zh]);
+  }, [zh, path, cloneLibraryFolder]);
 
   const handleCanvasPointerDown = useCallback((event) => {
     const api = apiRef.current;
     if (!api || event.target.closest(".App-toolbar, .library-trigger, .object-library")) return false;
-    if (materialBrush) {
-      event.preventDefault(); event.stopPropagation();
-      const point = scenePoint(event, api);
-      materialBrushSessionRef.current = { pointerId: event.pointerId, last: point };
-      setMaterialBrushDrawing(true);
-      event.currentTarget?.setPointerCapture?.(event.pointerId);
-      stampMaterialBrush([point]);
-      return true;
-    }
     if (partialEraser && event.shiftKey) {
       event.preventDefault(); event.stopPropagation();
       partialStraightPromiseRef.current = eraseSelectedImageArea(event);
@@ -1543,28 +1266,9 @@ function App() {
       elementIds: new Set(api.getSceneElements().map((element) => element.id)),
     };
     return false;
-  }, [drawPreciseLine, eraseSelectedImageArea, materialBrush, partialEraser, removeAnchorDot, scenePoint, stampMaterialBrush]);
+  }, [drawPreciseLine, eraseSelectedImageArea, partialEraser, removeAnchorDot, scenePoint]);
 
   const handleCanvasPointerMove = useCallback((event) => {
-    const brushSession = materialBrushSessionRef.current;
-    if (brushSession && apiRef.current) {
-      event.preventDefault(); event.stopPropagation();
-      const point = scenePoint(event, apiRef.current);
-      const spacing = Math.max(4, materialBrushSettings.spacing);
-      const dx = point.x - brushSession.last.x;
-      const dy = point.y - brushSession.last.y;
-      const distance = Math.hypot(dx, dy);
-      if (distance >= spacing) {
-        const count = Math.floor(distance / spacing);
-        const points = Array.from({ length: count }, (_, index) => {
-          const ratio = ((index + 1) * spacing) / distance;
-          return { x: brushSession.last.x + dx * ratio, y: brushSession.last.y + dy * ratio };
-        });
-        brushSession.last = points.at(-1);
-        stampMaterialBrush(points);
-      }
-      return true;
-    }
     if (partialStraightPromiseRef.current) {
       event.preventDefault(); event.stopPropagation();
       return true;
@@ -1574,17 +1278,10 @@ function App() {
     event.preventDefault(); event.stopPropagation();
     setStraightLinePreview({ x1: session.clientX, y1: session.clientY, x2: event.clientX, y2: event.clientY });
     return true;
-  }, [materialBrushSettings.spacing, scenePoint, stampMaterialBrush]);
+  }, []);
 
   const handleCanvasPointerUp = useCallback((event) => {
     const api = apiRef.current;
-    if (materialBrushSessionRef.current) {
-      event.preventDefault(); event.stopPropagation();
-      materialBrushSessionRef.current = null;
-      setMaterialBrushDrawing(false);
-      event.currentTarget?.releasePointerCapture?.(event.pointerId);
-      return true;
-    }
     if (partialStraightPromiseRef.current) {
       const pending = partialStraightPromiseRef.current;
       partialStraightPromiseRef.current = null;
@@ -1614,25 +1311,172 @@ function App() {
     return false;
   }, [drawPreciseLine, eraseSelectedImageArea, scenePoint]);
 
-  useEffect(() => {
-    if (!materialBrush) return undefined;
-    const leaveBrushWhenChoosingTool = (event) => {
-      if (!event.target.closest?.(".App-toolbar")) return;
-      setMaterialBrush(null);
-      setMaterialBrushDrawing(false);
-      materialBrushSessionRef.current = null;
-    };
-    document.addEventListener("pointerdown", leaveBrushWhenChoosingTool, true);
-    return () => document.removeEventListener("pointerdown", leaveBrushWhenChoosingTool, true);
-  }, [materialBrush]);
+  const changePrecision = next => {
+    const previous = precisionRef.current;
+    if (!next.grid || !next.gridVisible || !next.guide) setPrecisionEditing(current => current === "grid" && (!next.grid || !next.gridVisible) || current === "guide" && !next.guide ? null : current);
+    precisionRef.current = next;
+    setPrecision(next);
+    if (previous.measure !== next.measure) layers.showMeasurements(next.measure);
+    const api = apiRef.current;
+    if (api) saveCanvas(api.getSceneElements(), api.getAppState(), api.getFiles());
+  };
+  const precisionCenter = () => {
+    const api = apiRef.current;
+    const point = api && scenePoint({ clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 }, api);
+    return point ? [point.x, point.y] : [0, 0];
+  };
+  const openGrid = () => {
+    const current = precisionRef.current;
+    const [x, y] = current.gridPlaced ? current.origin : precisionCenter();
+    changePrecision({ ...current, grid: true, gridVisible: true, gridPlaced: true, origin: [x, y],
+      vanishing: current.vanishing || [[x + 280, y], [x - 280, y], [x, y - 220]] });
+  };
+  const openGuide = () => {
+    const current = precisionRef.current;
+    const [x, y] = precisionCenter();
+    changePrecision({ ...current, guide: true, guidePoints: current.guidePoints || [[x - 140, y - 75], [x + 140, y + 75]] });
+    setPrecisionEditing("guide");
+  };
+  const startMeasure = kind => {
+    setPrecisionEditing(null);
+    measureRef.current = { kind, start: null, status: setMeasureStatus, calibrate: setCalibrationLength };
+    setMeasureStatus("点击起点，Esc 取消");
+  };
+  const closePrecision = () => { setPrecisionOpen(false); setPrecisionEditing(null); };
+  const projectScene = () => {
+    const api = apiRef.current;
+    const elements = api.getSceneElements();
+    const used = sceneImageFileIds(elements);
+    return { elements, files: Object.fromEntries(Object.entries(api.getFiles()).filter(([id]) => used.has(id))),
+      appState: { viewBackgroundColor: brushKitRef.current.samplingBackground.current ?? api.getAppState().viewBackgroundColor },
+      relationships: relationshipsRef.current, relationshipCollections: relationshipCollectionsRef.current,
+      relationshipNames: relationshipNamesRef.current, precision: precisionRef.current,
+      layers: { ...layerState.current, focus: null } };
+  };
+  const backToGallery = async () => {
+    try {
+      await paintEngine.current?.idle();
+      await flushCanvasSave();
+      await libraryWriteQueueRef.current;
+      if (libraryReady && savedLibrary.current !== library) {
+        setIsOpen(true);
+        return;
+      }
+      const cover = await coverFor(projectScene()).catch(() => null);
+      await write("covers", project.id, cover).catch(() => {});
+      await onExit();
+    } catch { setSaveError("画布未保存，请重试或导出项目备份。"); }
+  };
+
+  const removeMaterial = (type, entry) => {
+    if (type === "folder") {
+      if (!window.confirm(`删除“${entry.item.name}”及其全部内容？`)) return;
+      setLibrary(root => removeFolderById(root, entry.item.id));
+      if (path.includes(entry.item.id)) setPath(path.slice(0, path.indexOf(entry.item.id)));
+      return;
+    }
+    if (!window.confirm(`删除素材“${entry.item.name}”？`)) return;
+    setLibrary(root => updateFolder(root, entry.path, folder => ({
+      ...folder, objects: folder.objects.filter(item => item.id !== entry.item.id),
+    })));
+  };
+  const importImages = async (files, targetPath) => {
+    let failed = 0;
+    const objects = [];
+    for (const file of files) {
+      if (!/^image\/(png|jpe?g|webp|gif|avif|bmp)$/i.test(file.type)) { failed++; continue; }
+      try {
+        const bitmap = await createImageBitmap(file);
+        const { width, height } = bitmap;
+        bitmap.close();
+        const imageData = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        });
+        const scale = Math.min(1, 480 / Math.max(width, height));
+        objects.push(packMaterial({ id: crypto.randomUUID(), name: file.name.replace(/\.[^.]+$/, ""),
+          kind: "image", imageData, width: width * scale, height: height * scale }));
+      } catch { failed++; }
+    }
+    if (objects.length) setLibrary(root => updateFolder(root, targetPath, folder => ({ ...folder, objects: [...folder.objects, ...objects] })));
+    if (failed) setLibraryError(`${failed} 张图片无法导入。支持 PNG、JPEG、WebP、GIF、AVIF 和 BMP。`);
+  };
+  libraryActions.current = {
+    close: () => setIsOpen(false), navigate: setPath, addPack: addFolder, saveSelection,
+    movePack: moveFolder,
+    retry: () => setLibrary(value => ({ ...value })), copy: copyLibraryItem, paste: pasteLibraryItem,
+    remove: removeMaterial,
+    edit: (type, entry) => {
+      setNameInput(entry.item.name);
+      setNameDialog({ type: type === "folder" ? "rename-folder" : "rename-object", id: entry.item.id,
+        path: entry.path, description: entry.item.description, tags: entry.item.tags?.join("，") });
+    },
+    favorite: (type, item, sourcePath) => setLibrary(root => type === "folder"
+      ? updateFolderById(root, item.id, folder => ({ ...folder, favorite: !folder.favorite }))
+      : updateFolder(root, sourcePath, folder => ({
+        ...folder, objects: folder.objects.map(object => object.id === item.id ? { ...object, favorite: !object.favorite } : object),
+      }))),
+    deleteMany: ids => {
+      if (!window.confirm(`删除选中的 ${ids.size} 个素材？`)) return;
+      const remove = folder => ({ ...folder, folders: folder.folders.map(remove),
+        objects: folder.objects.filter(item => !ids.has(item.id)) });
+      setLibrary(remove);
+    },
+    replace: entry => {
+      const api = apiRef.current;
+      const ids = api?.getAppState().selectedElementIds || {};
+      const elements = api?.getSceneElements().filter(element => ids[element.id]) || [];
+      if (!elements.length) { window.alert(ui.selectFirst); return; }
+      if (!window.confirm(`用画布选区替换“${entry.item.name}”？`)) return;
+      const allFiles = api.getFiles();
+      const files = Object.fromEntries([...sceneImageFileIds(elements)].filter(id => allFiles[id]).map(id => [id, storedFile(allFiles[id])]));
+      const packed = packMaterial({ ...entry.item, kind: undefined, elements: layerSafeElements(elements), files });
+      setLibrary(root => updateFolder(root, entry.path, folder => ({
+        ...folder, objects: folder.objects.map(item => item.id === packed.id ? packed : item),
+      })));
+    },
+    exportPack: async pack => {
+      try { downloadJSON({ type: "infinite-canvas-material-pack", version: 1, library: await exportTree(pack) }, pack.name + ".material-pack.json"); }
+      catch { setLibraryError("素材包导出失败。"); }
+    },
+    importBackup: () => libraryImportRef.current?.click(), exportBackup: exportLibrary,
+    importImages: () => materialImageInput.current?.click(), importFiles: importImages,
+    place: (item, panel) => {
+      const left = panel.left, right = window.innerWidth - panel.right;
+      const x = left > right ? left / 2 : panel.right + right / 2;
+      void placeMaterial(item, x, window.innerHeight / 2);
+    },
+    dragMaterial: (event, entry) => {
+      materialDrag.current = { type: "object", entry };
+      event.dataTransfer.setData(materialDragType, entry.item.id);
+      event.dataTransfer.effectAllowed = "copyMove";
+    },
+    dragPack: (event, item) => {
+      materialDrag.current = { type: "folder", item };
+      event.dataTransfer.setData(materialDragType, item.id);
+      event.dataTransfer.effectAllowed = "move";
+    },
+    canDrop: event => [...event.dataTransfer.types].includes(materialDragType),
+    dropInPack: (event, targetId) => {
+      if (![...event.dataTransfer.types].includes(materialDragType)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const drag = materialDrag.current;
+      if (drag?.type === "object") transferObject(drag.entry, targetId);
+      if (drag?.type === "folder") moveFolder(drag.item.id, targetId);
+      materialDrag.current = null;
+    },
+  };
 
   return (
-    <main className={`app-shell ${placing ? "is-placing" : ""} ${materialBrush ? "is-material-brush" : ""} ${(partialEraser || magicWand) ? "is-pixel-tool" : ""}`}>
+    <main lang={language} className={`app-shell wheel-only ${(partialEraser || magicWand) ? "is-pixel-tool" : ""} ${brushKit.selection && ["native", "dimensions"].includes(brushKit.panel) ? `object-${brushKit.panel}` : ""}`}>
       <div
         className="canvas-shell"
+        data-bucket={bucketEnabled || undefined}
         style={backgroundImage ? { backgroundImage: `url(${backgroundImage})`, backgroundRepeat: "repeat", backgroundSize: `${backgroundScale}px ${backgroundScale}px` } : undefined}
         onPointerMove={(event) => {
-          if (placing) setPointer({ x: event.clientX, y: event.clientY });
           if (handleCanvasPointerMove(event)) return;
           if (partialEraser || magicWand) {
             setBrushPosition({ x: event.clientX, y: event.clientY });
@@ -1641,13 +1485,135 @@ function App() {
             if (event.buttons & 1) void eraseSelectedImageArea(event);
           }
         }}
+        onDragOverCapture={event => {
+          if (materialDrag.current?.type === "object" && [...event.dataTransfer.types].includes(materialDragType)) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.dataTransfer.dropEffect = "copy";
+          }
+        }}
+        onDropCapture={event => {
+          if (![...event.dataTransfer.types].includes(materialDragType)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const drag = materialDrag.current;
+          materialDrag.current = null;
+          if (drag?.type === "object") void placeMaterial(drag.entry.item, event.clientX, event.clientY);
+        }}
         onPointerDownCapture={(event) => {
+          if (event.button === 0 && event.isPrimary && event.target.closest("canvas")) drawingPointer.current = event.pointerId;
+          if (event.button === 0 && event.target.closest("canvas") && apiRef.current &&
+              !layers.canDraw(apiRef.current.getAppState())) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+          if (measureRef.current && event.button === 0 && event.target.closest("canvas")) {
+            event.preventDefault();
+            event.stopPropagation();
+            measureAt(event, apiRef.current, measureRef, precisionRef.current, () => layers.showMeasurements(true));
+            return;
+          }
+          if (event.target.closest("canvas")) {
+            if (bucketEnabled && event.button === 0 && event.isPrimary && !apiRef.current?.getAppState().openDialog) {
+              event.preventDefault(); event.stopPropagation();
+              if (brushKitRef.current.panel) brushKitRef.current.setPanel(null);
+              bucketPointer.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
+              return;
+            }
+            if (nudgeEnabled && event.button === 0) {
+              event.preventDefault(); event.stopPropagation();
+              nudge.start(event, brushKit.settings.nudgeRadius);
+              return;
+            }
+            const state = apiRef.current?.getAppState();
+            if (state?.activeTool.type === "freedraw" && precisionRef.current.recognize) {
+              strokeHold.current = { x: event.clientX, y: event.clientY, last: performance.now(), held: 0 };
+            } else strokeHold.current = null;
+            if (event.button === 0 && precisionRef.current.measure && ["freedraw", "line", "arrow", "rectangle", "ellipse", "diamond"].includes(state?.activeTool.type)) {
+              liveMeasure.current = { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY,
+                zoom: state.zoom.value, type: state.activeTool.type, length: 0, next: 0 };
+            }
+            strokePointer.current = event.pointerType;
+            strokePenPressure.current = event.pressure || .5;
+            strokeProfile.current = brushKitRef.current.mode.current;
+            brushName.current = strokeProfile.current.name;
+            strokeRelease.current = null;
+            if (apiRef.current?.getAppState().activeTool.type === "freedraw" &&
+                paintEngine.current?.start(event, strokeProfile.current)) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+          }
           if (handleCanvasPointerDown(event)) return;
           if (partialEraser) void eraseSelectedImageArea(event);
           else if (magicWand) void magicWandAtPoint(event);
-          else confirmPlacement(event);
         }}
+        onPointerMoveCapture={event => {
+          if (nudgeEnabled) { nudge.move(event, brushKit.settings.nudgeRadius); return; }
+          const draftStroke = event.buttons && strokeProfile.current?.strokeStyle === "dashed" && apiRef.current?.getAppState().newElement;
+          if (draftStroke?.type === "freedraw" && draftStroke.strokeStyle !== "dashed") {
+            mutateElement(draftStroke, { strokeStyle: "dashed", customData: { ...draftStroke.customData, infiniteDashDensity: strokeProfile.current.dashDensity } }, false);
+          }
+          const hold = strokeHold.current;
+          if (hold && event.buttons && Math.hypot(event.clientX - hold.x, event.clientY - hold.y) > 4) {
+            hold.x = event.clientX; hold.y = event.clientY; hold.last = performance.now();
+          }
+          const live = liveMeasure.current;
+          if (live?.type === "freedraw" && event.buttons) {
+            live.length += Math.hypot(event.clientX - live.lastX, event.clientY - live.lastY);
+            live.lastX = event.clientX; live.lastY = event.clientY;
+          }
+          if (live && event.buttons && performance.now() >= live.next && measureOutput.current) {
+            live.next = performance.now() + 45;
+            const output = measureOutput.current;
+            const dx = Math.abs(event.clientX - live.x) / live.zoom, dy = Math.abs(event.clientY - live.y) / live.zoom;
+            const settings = precisionRef.current;
+            output.textContent = live.type === "freedraw" ? measured(live.length / live.zoom, settings) :
+              ["rectangle", "ellipse", "diamond"].includes(live.type) ? measured(dx, settings) + " × " + measured(dy, settings) : measured(Math.hypot(dx, dy), settings);
+            output.style.left = Math.min(innerWidth - 100, event.clientX + 12) + "px";
+            output.style.top = Math.max(10, event.clientY - 28) + "px";
+            output.hidden = false;
+          }
+          if (event.pointerType === "pen" && event.buttons) {
+            const time = performance.now();
+            if (time - penStatusTime.current > 80) {
+              penStatusTime.current = time;
+              for (const status of document.querySelectorAll(".brush-pen-status, .brush-pen-reading")) {
+                status.hidden = false;
+                status.textContent = `压感笔 · 压力 ${Math.round(event.pressure * 100)}% · 倾斜 ${Math.round(Math.hypot(event.tiltX, event.tiltY))}°`;
+              }
+            }
+            const stroke = apiRef.current?.getAppState().newElement;
+            if (stroke?.type === "freedraw" && stroke.simulatePressure && strokeProfile.current?.dynamics === "pressure") {
+              mutateElement(stroke, { simulatePressure: false, pressures: stroke.points.map(() => strokePenPressure.current) }, false);
+            }
+          }
+          if (paintEngine.current?.move(event)) { event.preventDefault(); event.stopPropagation(); }
+        }}
+        onPointerLeave={() => nudge.leave()}
+        onPointerCancelCapture={event => { if (bucketPointer.current?.id === event.pointerId) bucketPointer.current = null; nudge.cancel(); liveMeasure.current = null; strokeHold.current = null; if (measureOutput.current) measureOutput.current.hidden = true; if (paintEngine.current?.end(event, true)) event.stopPropagation(); }}
         onPointerUpCapture={(event) => {
+          const bucket = bucketPointer.current;
+          if (bucketEnabled && bucket?.id === event.pointerId) {
+            bucketPointer.current = null;
+            event.preventDefault(); event.stopPropagation();
+            const api = apiRef.current;
+            if (api && event.target.closest("canvas") && Math.hypot(event.clientX - bucket.x, event.clientY - bucket.y) <= 6) {
+              const result = fillAt(api, scenePoint(event, api), brushKitRef.current.currentPen(), layerState.current);
+              if (result) api.setToast({ message: zh ? result.zh : result.en });
+            }
+            return;
+          }
+          if (nudgeEnabled && event.button === 0) { nudge.move(event, brushKit.settings.nudgeRadius); nudge.end(event); event.stopPropagation(); return; }
+          liveMeasure.current = null;
+          if (measureOutput.current) measureOutput.current.hidden = true;
+          if (strokeHold.current) strokeHold.current.held = performance.now() - strokeHold.current.last;
+          if (paintEngine.current?.end(event)) { event.preventDefault(); event.stopPropagation(); return; }
+          if (apiRef.current && activeToolRef.current === "freedraw") {
+            strokeRelease.current = scenePoint(event, apiRef.current);
+          }
           if (handleCanvasPointerUp(event)) return;
           if (partialEraser && eraseSessionRef.current) void eraseSelectedImageArea(event, true);
         }}
@@ -1657,12 +1623,28 @@ function App() {
           onLinkOpen={handleNativeLinkOpen}
           onPointerDown={handleExcalidrawPointerDown}
           onChange={(elements, appState, files) => {
+            layers.sync(elements, appState);
             const activeTool = appState.activeTool?.type || "selection";
+            const changedTool = activeToolRef.current !== activeTool;
+            const enteredFreeDraw = activeTool === "freedraw" && changedTool;
             activeToolRef.current = activeTool;
+            if (changedTool) {
+              brushKitRef.current.nativeChanged(activeTool);
+              if (activeTool !== "selection") setNudgeEnabled(false);
+            }
+            if (enteredFreeDraw) queueMicrotask(() => {
+              if (activeToolRef.current === "freedraw") brushKitRef.current.applyLast();
+            });
             const nextSelectedElementIds = appState.selectedElementIds || {};
-            setSelectedElementIds(nextSelectedElementIds);
             const selectedIds = Object.keys(nextSelectedElementIds).filter((id) => nextSelectedElementIds[id]);
-            const overlayElements = elements.filter((element) => selectedIds.includes(element.id) && !element.isDeleted);
+            setSelectedElementIds(previous => {
+              const previousIds = Object.keys(previous).filter(id => previous[id]);
+              return previousIds.length === selectedIds.length && selectedIds.every(id => previous[id])
+                ? previous : nextSelectedElementIds;
+            });
+            const overlayElements = selectedIds.length
+              ? elements.filter(element => nextSelectedElementIds[element.id] && !element.isDeleted) : [];
+            brushKitRef.current.syncSelection(overlayElements, bucketEnabled ? "bucket" : activeTool);
             const overlayBounds = overlayElements.length ? {
               x: Math.min(...overlayElements.map((element) => element.x)),
               y: Math.min(...overlayElements.map((element) => element.y)),
@@ -1677,6 +1659,10 @@ function App() {
               width: overlayBounds.right - overlayBounds.x,
               height: overlayBounds.bottom - overlayBounds.y,
               angle: overlayElements.length === 1 ? overlayElements[0].angle : 0,
+              ...(precisionRef.current.measure && overlayElements.length === 1 && {
+                length: overlayElements[0].points?.reduce((sum, p, i, all) => i ? sum + Math.hypot(p[0] - all[i - 1][0], p[1] - all[i - 1][1]) : sum, 0),
+                area: overlayElements[0].width * overlayElements[0].height * ({ rectangle: 1, diamond: .5, ellipse: Math.PI / 4 }[overlayElements[0].type] || 0),
+              }),
               version: overlayElements.map((element) => element.version).join("|"),
             } : null;
             setRelationshipOverlayElement((currentOverlayElement) => JSON.stringify(currentOverlayElement) === JSON.stringify(nextOverlayElement)
@@ -1699,72 +1685,84 @@ function App() {
             }
             saveCanvas(elements, appState, files);
           }}
+          onPointerUp={tool => {
+            const stroke = apiRef.current?.getAppState().newElement;
+            const profile = brushKitRef.current.pen;
+            if (stroke && stroke.type !== "freedraw" && hasLineStyle(stroke.type) && profile?.type === stroke.type && profile.strokeStyle === "dashed") {
+              mutateElement(stroke, { strokeStyle: "dashed", customData: { ...stroke.customData, infiniteDashDensity: profile.dashDensity } }, false);
+            }
+            if (tool.type === "freedraw" && stroke?.type === "freedraw") {
+              finalizeBrush(stroke, strokeProfile.current, strokePointer.current, mutateElement, strokeRelease.current);
+              const settings = precisionRef.current;
+              const held = strokeHold.current?.held || 0;
+              if (settings.guide || settings.snap && settings.grid || settings.recognize && held >= settings.hold) {
+                const api = apiRef.current;
+                // Excalidraw appends its raw release point after this callback returns.
+                queueMicrotask(() => {
+                  if (api !== apiRef.current) return;
+                  const completed = api.getSceneElements().find(element => element.id === stroke.id);
+                  if (completed) preciseStroke(completed, settings, held, (element, updates) => mutateElement(element, updates));
+                });
+              }
+            }
+          }}
+          gridModeEnabled={false}
+          objectsSnapModeEnabled={precision.snap}
           langCode={language}
           initialData={canvasInitialData}
-        />}
+        >
+          <MainMenu>
+            <MainMenu.Item onSelect={backToGallery}>返回项目画廊</MainMenu.Item>
+            <MainMenu.Item onSelect={() => setLanguage(zh ? "en" : "zh-CN")}>{ui.language}</MainMenu.Item>
+            <MainMenu.Item onSelect={() => downloadJSON({ type: "infinite-canvas-project", version: 1, name: project.name, scene: projectScene() }, project.name + ".canvas.json")}>导出项目备份</MainMenu.Item>
+            <MainMenu.Item onSelect={() => {
+              const { elements, appState, files } = projectScene();
+              const exported = JSON.parse(serializeAsJSON(layerSafeElements(elements), appState, files, "local"));
+              downloadJSON({ ...exported, files: { ...files, ...exported.files } }, project.name + ".excalidraw");
+            }}>导出 Excalidraw 文件</MainMenu.Item>
+            <MainMenu.DefaultItems.Export />
+            <MainMenu.DefaultItems.SearchMenu />
+            <MainMenu.Item onSelect={() => setShortcutSettingsOpen(true)}>{zh ? "快捷键设置" : "Keyboard shortcuts"}</MainMenu.Item>
+            <MainMenu.DefaultItems.Help />
+            <MainMenu.DefaultItems.ChangeCanvasBackground />
+          </MainMenu>
+        </Excalidraw>}
+        <canvas className="brush-paint-preview" ref={paintCanvas} aria-hidden="true" />
       </div>
 
+      <LayerPanel controller={layers} hasSelection={selectedRelationshipIds.length > 0}
+        onTogglePrecision={() => precisionOpen ? closePrecision() : setPrecisionOpen(true)} onClosePrecision={closePrecision}
+        precisionTools={precisionOpen && <PrecisionPanel value={precision} change={changePrecision} start={startMeasure}
+          section={precisionSection} setSection={setPrecisionSection} editing={precisionEditing} setEditing={setPrecisionEditing}
+          openGuide={openGuide} openGrid={openGrid} />}
+        gridLayer={<PrecisionGridRow value={precision} change={changePrecision}
+          settings={() => { setPrecisionOpen(true); setPrecisionSection("grid"); }} edit={() => { if (!precision.gridVisible) openGrid(); setPrecisionEditing("grid"); }} />} />
+      <PrecisionOverlay value={precision} viewport={canvasViewport} change={changePrecision} editing={precisionEditing} selected={relationshipOverlayElement} />
+      {precision.measure && <output ref={measureOutput} className="precision-selected-measure" hidden />}
+      {measureStatus && <div className="precision-status" role="status">{measureStatus}</div>}
+      {calibrationLength && <CalibrationDialog length={calibrationLength} unit={precision.unit} close={() => setCalibrationLength(null)}
+        apply={scale => { changePrecision({ ...precisionRef.current, scale }); setCalibrationLength(null); }} />}
+      <BrushKit kit={brushKit} zh={zh} />
+      {shortcutSettingsOpen && <ShortcutSettings kit={brushKit} zh={zh} close={() => setShortcutSettingsOpen(false)} />}
+      {nudgeEnabled && <><div ref={nudgeCursor} className="nudge-cursor" hidden />
+        <svg className="nudge-preview" aria-hidden="true"><path ref={nudgePreview} /></svg></>}
+      {saveError && <button className="workspace-save-error" onClick={() => {
+        setSaveError("");
+        void flushCanvasSave().catch(() => {});
+      }}>{saveError} 重试</button>}
       <input ref={backgroundInputRef} className="visually-hidden" type="file" accept="image/*" onChange={chooseBackgroundImage} />
       <input ref={libraryImportRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importLibrary} />
-      <input ref={folderImportRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importFolder} />
 
-      <button className="library-trigger" onClick={() => setIsOpen((open) => !open)} aria-expanded={isOpen} title={ui.library} aria-label={ui.library}>◫</button>
+      <input ref={materialImageInput} className="visually-hidden" type="file" accept="image/*" multiple onChange={event => {
+        void importImages([...event.target.files], path);
+        event.target.value = "";
+      }} />
+      <button className="library-trigger" onClick={() => setIsOpen(open => !open)} aria-expanded={isOpen}
+        title={ui.library} aria-label={ui.library}><LibraryIcon name="grid" /></button>
+      {isOpen && <MaterialPanel library={library} path={path} current={current} ready={libraryReady}
+        error={libraryError} zh={zh} clipboard={libraryClipboard} actionsRef={libraryActions} />}
 
-      {isOpen && (
-        <aside className="object-library" aria-label={ui.library}>
-          <header>
-            <button className="back-button" onClick={() => path.length ? setPath((items) => items.slice(0, -1)) : setIsOpen(false)}>
-              {path.length ? ui.back : "×"}
-            </button>
-            <strong>{current.name || ui.library}</strong>
-            <button onClick={addFolder} title={ui.newFolder} aria-label={ui.newFolder}>＋</button>
-          </header>
-          <div className="library-actions">
-            <button className="library-icon-action" onClick={saveSelection} title={ui.save} aria-label={ui.save}>▣</button>
-            <button className={`library-icon-action ${bulkEditing ? "is-active" : ""}`} onClick={() => { setBulkEditing((active) => !active); setBulkObjectIds(new Set()); }} title={zh ? "批量编辑" : "Bulk edit"} aria-label={zh ? "批量编辑" : "Bulk edit"}>☷</button>
-            <button className={`library-icon-action ${searchOpen ? "is-active" : ""}`} onClick={() => { setSearchOpen((active) => !active); if (searchOpen) setLibrarySearch(""); }} title={zh ? "搜索素材" : "Search materials"} aria-label={zh ? "搜索素材" : "Search materials"}>⌕</button>
-            <button className={`library-icon-action ${materialBrushPicking ? "is-active" : ""}`} onClick={() => setMaterialBrushPicking((active) => !active)} title={zh ? "选择素材画笔" : "Choose material brush"} aria-label={zh ? "选择素材画笔" : "Choose material brush"}>✣</button>
-            <span className="library-backup">
-              <button className={`library-icon-action ${backupMenuOpen ? "is-active" : ""}`} onClick={() => setBackupMenuOpen((open) => !open)} title={zh ? "素材库备份与导入" : "Library backup and import"} aria-label={zh ? "素材库备份与导入" : "Library backup and import"}>⋯</button>
-              {backupMenuOpen && <div className="library-backup-menu"><button onClick={exportLibrary}>{zh ? "导出素材库" : "Export library"}</button><button onClick={() => libraryImportRef.current?.click()}>{zh ? "导入素材库" : "Import library"}</button><button onClick={() => chooseFolderImport()}>{zh ? "导入素材文件夹" : "Import folder"}</button></div>}
-            </span>
-          </div>
-          {searchOpen && <input className="library-search" autoFocus value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)} placeholder={zh ? "搜索" : "Search"} aria-label={zh ? "搜索素材" : "Search materials"} />}
-          {bulkEditing && <div className="bulk-actions"><span>{bulkObjectIds.size}</span><button onClick={deleteBulkObjects} title={ui.delete} aria-label={ui.delete}>⌫</button></div>}
-          <p className={`hint ${materialBrushPicking ? "is-brush-picking" : ""}`}>{materialBrushPicking ? (zh ? "点击一个素材，将它设为素材画笔。" : "Choose a material to use as the brush.") : `${ui.hint} ${ui.moveHint}`}</p>
-          <div className="library-content">
-            {visibleFolders.map((folder) => (
-              <div className={`folder-card ${draggedFolderId === folder.id ? "is-dragging" : ""}`} key={folder.id} draggable
-                onDragStart={() => setDraggedFolderId(folder.id)} onDragEnd={() => setDraggedFolderId(null)}
-                onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (draggedObjectId) transferObject(draggedObjectId, folder.id); else moveFolder(draggedFolderId, folder.id); setDraggedFolderId(null); setDraggedObjectId(null); }}>
-                <button className="folder-open" onClick={() => setPath((items) => [...items, folder.id])} title={folder.name}>
-                  <FolderIcon /><b>{folder.name}</b><small>{folder.folders.length + folder.objects.length}</small>
-                </button>
-                <button className="library-clip-action" onClick={() => { setLibrarySelection({ type: "folder", id: folder.id }); setLibraryMenu(libraryMenu === `folder:${folder.id}` ? null : `folder:${folder.id}`); }} title={zh ? "更多操作" : "More actions"}>⌄</button>
-                {libraryMenu === `folder:${folder.id}` && <div className="object-transfer-menu"><button onClick={() => renameFolder(folder)}>{zh ? "重命名" : "Rename"}</button><button onClick={() => copyLibraryItem("folder", folder)}>{zh ? "复制" : "Copy"} <kbd>Ctrl+C</kbd></button><button onClick={() => copyLibraryItem("folder", folder, true)}>{zh ? "剪切" : "Cut"} <kbd>Ctrl+X</kbd></button><button disabled={!libraryClipboard} onClick={pasteLibraryItem}>{zh ? "粘贴" : "Paste"} <kbd>Ctrl+V</kbd></button><button onClick={() => exportFolder(folder)}>{zh ? "导出文件夹" : "Export folder"}</button><button onClick={() => chooseFolderImport(folder.id)}>{zh ? "导入文件夹到此处" : "Import into folder"}</button><button className="transfer-delete" onClick={() => deleteLibraryItem("folder", folder)}>{zh ? "删除" : "Delete"} <kbd>Del</kbd></button></div>}
-                <button className="folder-delete" onClick={() => deleteFolder(folder.id, folder.name)} title={ui.deleteFolder} aria-label={ui.deleteFolder}>×</button>
-              </div>
-            ))}
-            {visibleObjectEntries.map(({ object, sourcePath, pathLabel }) => (
-              <article className={`object-card ${bulkObjectIds.has(object.id) ? "is-selected" : ""}`} key={object.id} draggable={!bulkEditing && !normalizedLibrarySearch} onDragStart={() => setDraggedObjectId(object.id)} onDragEnd={() => setDraggedObjectId(null)}>
-                {bulkEditing && !normalizedLibrarySearch && <button className="bulk-object-check" onClick={() => toggleBulkObject(object.id)} title={bulkObjectIds.has(object.id) ? (zh ? "取消选择" : "Deselect") : (zh ? "选择素材" : "Select material")}>{bulkObjectIds.has(object.id) ? "✓" : ""}</button>}
-                <button className="object-preview" onClick={() => bulkEditing ? toggleBulkObject(object.id) : materialBrushPicking ? activateMaterialBrush(object) : beginPlacement(object)} title={materialBrushPicking ? `${zh ? "设为素材画笔" : "Use as material brush"}: ${object.name}` : `${ui.place}: ${object.name}`}>
-                  {object.preview ? <img src={object.preview} alt="" /> : <span>{object.elements?.length || 1}</span>}
-                </button>
-                <div><button className="object-name" onClick={() => bulkEditing ? toggleBulkObject(object.id) : materialBrushPicking ? activateMaterialBrush(object) : beginPlacement(object)} onDoubleClick={() => renameObject(object, sourcePath)}>{object.name}</button><small>{pathLabel || (object.kind === "image" ? "PNG" : `${object.elements.length} ${ui.objects}`)}</small></div>
-                {!bulkEditing && <button className="library-clip-action" onClick={() => { setLibrarySelection({ type: "object", id: object.id }); setLibraryMenu(libraryMenu === `object:${object.id}` ? null : `object:${object.id}`); }} title={zh ? "更多操作" : "More actions"}>⌄</button>}
-                {libraryMenu === `object:${object.id}` && <div className="object-transfer-menu"><button onClick={() => activateMaterialBrush(object)}>{zh ? "设为素材画笔" : "Use as material brush"}</button><button onClick={() => renameObject(object, sourcePath)}>{zh ? "重命名" : "Rename"}</button><button onClick={() => copyLibraryItem("object", object, false, sourcePath)}>{zh ? "复制" : "Copy"} <kbd>Ctrl+C</kbd></button><button onClick={() => copyLibraryItem("object", object, true, sourcePath)}>{zh ? "剪切" : "Cut"} <kbd>Ctrl+X</kbd></button><button disabled={!libraryClipboard} onClick={pasteLibraryItem}>{zh ? "粘贴" : "Paste"} <kbd>Ctrl+V</kbd></button><button className="transfer-delete" onClick={() => deleteLibraryItem("object", object, sourcePath)}>{zh ? "删除" : "Delete"} <kbd>Del</kbd></button></div>}
-                {!bulkEditing && !normalizedLibrarySearch && <button className="object-actions" onClick={() => setObjectMenu(objectMenu === object.id ? null : object.id)} title={zh ? "移动或复制" : "Move or copy"}>⌄</button>}
-                {objectMenu === object.id && <div className="object-transfer-menu"><small>{zh ? "移动到" : "Move to"}</small>{folderOptions.map((folder) => <button key={`move-${folder.id}`} onClick={() => transferObject(object.id, folder.id)}>{folder.name}</button>)}<small>{zh ? "复制到" : "Copy to"}</small>{folderOptions.map((folder) => <button key={`copy-${folder.id}`} onClick={() => transferObject(object.id, folder.id, true)}>{folder.name}</button>)}<button className="transfer-delete" onClick={() => { removeObject(object.id); setObjectMenu(null); }}>{ui.delete}</button></div>}
-              </article>
-            ))}
-            {!visibleFolders.length && !visibleObjectEntries.length && <p className="empty">{librarySearch ? (zh ? "未找到素材。" : "No materials found.") : ui.empty}</p>}
-          </div>
-        </aside>
-      )}
-
-      {relationshipHost && selectedRelationshipElement && createPortal(
-        <span className="canvas-native-relationship">
+      {selectedRelationshipElement && <span className="relationship-control">
           <button
             type="button"
             className={`canvas-native-relationship-trigger ${relationshipSourceId ? "is-linking" : ""}`}
@@ -1777,9 +1775,7 @@ function App() {
           >
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.6 13.4a4 4 0 0 0 5.7.1l2-2a4 4 0 0 0-5.7-5.7l-1.1 1.1M13.4 10.6a4 4 0 0 0-5.7-.1l-2 2a4 4 0 0 0 5.7 5.7l1.1-1.1" /></svg>
           </button>
-        </span>,
-        relationshipHost,
-      )}
+        </span>}
       {relationshipOverlayPosition && <div className="relationship-object-jump" style={relationshipOverlayPosition}>
         <button
           type="button"
@@ -1797,30 +1793,6 @@ function App() {
       </div>}
       {relationshipSourceId && <div className="relationship-hint">{zh ? "点击另一个对象以建立双向链接；Esc 取消" : "Click another object to create a two-way link; Esc to cancel"}</div>}
 
-      {materialBrush && <section className="material-brush-panel" aria-label={zh ? "素材画笔设置" : "Material brush settings"}>
-        <header>
-          <span className="material-brush-preview">{materialBrush.preview ? <img src={materialBrush.preview} alt="" /> : "✣"}</span>
-          <div><strong>{zh ? "素材画笔" : "Material brush"}</strong><small>{materialBrush.name}</small></div>
-          <button onClick={() => { setMaterialBrush(null); setMaterialBrushDrawing(false); materialBrushSessionRef.current = null; }} title={zh ? "关闭" : "Close"} aria-label={zh ? "关闭" : "Close"}>×</button>
-        </header>
-        {[
-          ["size", zh ? "基础大小" : "Base size", 10, 300, "%"],
-          ["randomSize", zh ? "随机大小" : "Random size", 0, 90, "%"],
-          ["randomRotation", zh ? "随机旋转" : "Random rotation", 0, 180, "°"],
-          ["spacing", zh ? "间距" : "Spacing", 10, 500, "px"],
-        ].map(([key, label, min, max, unit]) => <label key={key}>
-          <span>{label}<output>{materialBrushSettings[key]}{unit}</output></span>
-          <input type="range" min={min} max={max} value={materialBrushSettings[key]} onChange={(event) => setMaterialBrushSettings((settings) => ({ ...settings, [key]: Number(event.target.value) }))} />
-        </label>)}
-        <p>{materialBrushDrawing ? (zh ? "正在绘制…" : "Drawing…") : (zh ? "按住左键拖动绘制 · Esc 退出" : "Drag to paint · Esc to exit")}</p>
-      </section>}
-
-      {placing && (
-        <div className="placement-ghost" style={{ left: pointer.x + 16, top: pointer.y + 16 }}>
-          {placing.preview ? <img src={placing.preview} alt="" /> : <span>{placing.name}</span>}
-          <small>{ui.placed}</small>
-        </div>
-      )}
       {partialEraser && brushPosition && (
         <div className="partial-eraser-cursor" style={{ left: brushPosition.x - brushSize / 2, top: brushPosition.y - brushSize / 2, width: brushSize, height: brushSize }} />
       )}
@@ -1832,6 +1804,12 @@ function App() {
           <form className="name-dialog" onSubmit={submitName} aria-label={nameDialog.type === "folder" ? ui.folderDialog : nameDialog.type === "rename-canvas-node" ? (zh ? "重命名画布对象" : "Rename canvas object") : ui.saveDialog}>
             <strong>{nameDialog.type === "folder" ? ui.folderDialog : nameDialog.type === "rename-canvas-node" ? (zh ? "重命名画布对象" : "Rename canvas object") : ui.saveDialog}</strong>
             <input autoFocus value={nameInput} onChange={(event) => setNameInput(event.target.value)} aria-label={ui.name} />
+            {(nameDialog.type === "folder" || nameDialog.type === "rename-folder") && <label>素材包说明
+              <textarea value={nameDialog.description || ""} maxLength={300} onChange={event =>
+                setNameDialog(value => ({ ...value, description: event.target.value }))} /></label>}
+            {nameDialog.type === "rename-object" && <label>搜索标签（用逗号分隔）
+              <input value={nameDialog.tags || ""} maxLength={200} onChange={event =>
+                setNameDialog(value => ({ ...value, tags: event.target.value }))} /></label>}
             <div>
               <button type="button" onClick={() => setNameDialog(null)}>{ui.cancel}</button>
               <button type="submit">{ui.confirm}</button>
@@ -1844,4 +1822,4 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+createRoot(document.getElementById("root")).render(<Gallery Editor={App} readLegacy={readIndexedCanvas} />);
