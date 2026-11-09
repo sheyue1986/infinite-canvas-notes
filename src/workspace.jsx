@@ -1,8 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { exportToCanvas } from "@excalidraw/excalidraw";
 import { createProject, deleteProject, list, materialData, read, write } from "./storage.js";
 
 import { modelProjectData, unpackModelProject } from "./model-views.js";
+
+const MapSetup = lazy(() => import("./map-setup.jsx"));
 
 export function downloadJSON(value, name) {
   downloadBlob(new Blob([JSON.stringify(value)], { type: "application/json" }), name);
@@ -92,6 +94,7 @@ let legacyMigration;
 export function Gallery({ Editor, readLegacy }) {
   const [projects, setProjects] = useState(null);
   const [opened, setOpened] = useState(null);
+  const [mapSetup, setMapSetup] = useState(false);
   const [error, setError] = useState("");
   const input = useRef(null);
   const refresh = async () => setProjects((await list("projects")).sort((a, b) => b.updated - a.updated));
@@ -140,12 +143,20 @@ export function Gallery({ Editor, readLegacy }) {
   return <main className="workspace-gallery">
     <header><div><h1>无限画布</h1><p>项目画廊</p></div><div className="workspace-actions">
       <button disabled={!projects} onClick={() => input.current.click()}>导入项目</button>
+      <button disabled={!projects} onClick={() => setMapSetup(true)}>＋ 地图项目</button>
       <button disabled={!projects} onClick={() => run(async () => {
         const name = window.prompt("项目名称", "未命名画布")?.trim();
         if (name) await open(await createProject(name));
       })}>＋ 新建画布</button>
     </div></header>
     <input ref={input} type="file" hidden accept=".excalidraw,.json" onChange={importProject} />
+    {mapSetup && <Suspense fallback={<p role="status">正在加载地图工具…</p>}>
+      <MapSetup close={() => setMapSetup(false)} create={async (name, scene, cover) => {
+        const project = await createProject(name, scene, cover);
+        setMapSetup(false);
+        setOpened({ ...project, scene });
+      }} />
+    </Suspense>}
     {error && <p role="alert">{error}</p>}
     {!projects ? <p>正在读取项目…</p> : projects.length === 0 ? <p>新建一张画布开始设计。</p> : null}
     <div className="workspace-projects">{projects?.map(project => <article key={project.id}>

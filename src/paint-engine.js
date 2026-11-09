@@ -1,5 +1,7 @@
 import { CaptureUpdateAction, convertToExcalidrawElements, newElementWith } from "@excalidraw/excalidraw";
 import { dashPattern } from "./line-style.js";
+import { brushControlValue, brushResponse, speedPressure } from "./brush-response.js";
+import { fillPaint, isClosedOutline } from "./closed-fill.js";
 
 const cap = 1400;
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
@@ -58,13 +60,22 @@ function tip(profile, mask) {
 }
 
 const diameter = (profile, p) => profile.width * (profile.engine === "water" ? 5 : 4.25) * (.35 + p.p * 1.02);
+const shape = profile => ({
+  spacing: brushControlValue(profile, "spacing") / 100,
+  scatter: brushControlValue(profile, "scatter") / 100,
+  rotation: brushControlValue(profile, "rotation") * Math.PI / 180,
+  flow: brushControlValue(profile, "flow") / 100,
+});
 
-function dab(ctx, stamp, profile, sample, rand, origin, scale) {
+function dab(ctx, stamp, profile, sample, rand, origin, scale, controls) {
   const d = diameter(profile, sample) * scale;
+  const scatterAngle = controls.scatter ? rand() * Math.PI * 2 : 0;
+  const offset = controls.scatter ? d * controls.scatter * .65 * rand() : 0;
   ctx.save();
-  ctx.translate((sample.x - origin.x) * scale, (sample.y - origin.y) * scale);
-  ctx.rotate(sample.tilt > .15 ? sample.angle : rand() * Math.PI);
-  ctx.globalAlpha = profile.engine === "water" ? .105 + sample.p * .11 : .32 + sample.p * .54;
+  ctx.translate((sample.x - origin.x) * scale + Math.cos(scatterAngle) * offset,
+    (sample.y - origin.y) * scale + Math.sin(scatterAngle) * offset);
+  ctx.rotate((sample.tilt > .15 ? sample.angle : rand() * Math.PI) + controls.rotation);
+  ctx.globalAlpha = (profile.engine === "water" ? .105 + sample.p * .11 : .32 + sample.p * .54) * controls.flow;
   const width = d * (1 + sample.tilt * .38);
   const height = d * (1 - sample.tilt * .24);
   ctx.drawImage(stamp, -width / 2, -height / 2, width, height);
@@ -73,17 +84,19 @@ function dab(ctx, stamp, profile, sample, rand, origin, scale) {
 
 function sampler(profile, stamp, ctx, origin, scale) {
   const rand = random(12376);
+  const controls = shape(profile);
   const pattern = profile.strokeStyle === "dashed" ? dashPattern(profile.width, profile.dashDensity, profile.engine === "water" ? 5 : 4.25) : null;
   let carry = 0, prev, count = 0, travel = 0;
   return sample => {
-    if (!prev) { prev = sample; dab(ctx, stamp, profile, sample, rand, origin, scale); return; }
+    if (!prev) { prev = sample; dab(ctx, stamp, profile, sample, rand, origin, scale, controls); return; }
     const distance = Math.hypot(sample.x - prev.x, sample.y - prev.y);
-    const step = Math.max(.7, diameter(profile, sample) * (profile.engine === "water" ? .14 : .20));
+    const step = Math.max(.7, diameter(profile, sample) * controls.spacing);
+    carry %= step;
     for (let offset = Math.max(.01, step - carry); offset <= distance && count < 6500; offset += step) {
       const fraction = offset / distance;
       if (!pattern || (travel + offset) % (pattern[0] + pattern[1]) < pattern[0]) {
         dab(ctx, stamp, profile, { ...sample, x: prev.x + (sample.x - prev.x) * fraction,
-          y: prev.y + (sample.y - prev.y) * fraction, p: prev.p + (sample.p - prev.p) * fraction }, rand, origin, scale);
+          y: prev.y + (sample.y - prev.y) * fraction, p: prev.p + (sample.p - prev.p) * fraction }, rand, origin, scale, controls);
       }
       count++;
     }
@@ -95,12 +108,39 @@ function sampler(profile, stamp, ctx, origin, scale) {
 
 function brushBounds(samples, profile) {
   let x = Infinity, y = Infinity, right = -Infinity, bottom = -Infinity;
+  const scatter = shape(profile).scatter;
   for (const sample of samples) {
-    const pad = diameter(profile, sample) * .8 + 2;
+    const pad = diameter(profile, sample) * (.8 + .65 * scatter) + 2;
     x = Math.min(x, sample.x - pad); y = Math.min(y, sample.y - pad);
     right = Math.max(right, sample.x + pad); bottom = Math.max(bottom, sample.y + pad);
   }
   return { x, y, right, bottom };
+}
+
+function applyResponse(sample, previous, profile) {
+  const dynamics = profile.dynamics;
+  const distance = previous ? Math.hypot(sample.x - previous.x, sample.y - previous.y) : 0;
+  const input = dynamics === "speed" || dynamics === "inverse" ? speedPressure(distance, profile.width, dynamics) : sample.p;
+  return { ...sample, p: dynamics === "fixed" ? .5 : brushResponse(input, profile) };
+}
+
+function traceStroke(trace, samples, smoothing) {
+  if (smoothing === 1 && samples.length > 1) {
+    [samples[0], samples.at(-1)].forEach(trace);
+    return;
+  }
+  samples.forEach((sample, index) => {
+    if (!index || index === samples.length - 1 || !smoothing) { trace(sample); return; }
+    const a = samples[index - 1], b = samples[index + 1];
+    trace({ ...sample, x: sample.x + ((a.x + b.x) / 2 - sample.x) * smoothing,
+      y: sample.y + ((a.y + b.y) / 2 - sample.y) * smoothing });
+  });
+}
+
+export function renderPaintPreview(ctx, profile, samples, mask, scale) {
+  const stamp = tip(profile, profile.engine === "stamp" ? mask : null);
+  const trace = sampler(profile, stamp, ctx, { x: 0, y: 0 }, scale);
+  traceStroke(trace, samples.map((sample, index) => applyResponse(sample, samples[index - 1], profile)), profile.smoothing / 100);
 }
 
 const overlaps = (a, b) => a.x < b.x + b.width && a.right > b.x && a.y < b.y + b.height && a.bottom > b.y;
@@ -178,7 +218,7 @@ export function makePaintEngine(canvasRef, apiRef, resolveLayer) {
       lastTip = { color: profile.color, engine: profile.engine, bitmap, stamp: tip(profile, bitmap) };
     }
     const stamp = lastTip.stamp;
-    const first = point(event, transform);
+    const first = applyResponse(point(event, transform), null, profile);
     const ctx = canvas.getContext("2d");
     const preview = sampler(profile, stamp, ctx, { x: (rect.left - transform.left) / zoom - state.scrollX,
       y: (rect.top - transform.top) / zoom - state.scrollY }, zoom * scale);
@@ -195,8 +235,8 @@ export function makePaintEngine(canvasRef, apiRef, resolveLayer) {
     const events = native.getCoalescedEvents?.() || [];
     for (const sample of events.length ? events : [native]) {
       if (gesture.samples.length >= 6000) break;
-      const p = point(sample, gesture.transform);
       const last = gesture.samples.at(-1);
+      const p = applyResponse(point(sample, gesture.transform), last, gesture.profile);
       if (Math.hypot(last.x - p.x, last.y - p.y) < .2) continue;
       gesture.samples.push(p);
       gesture.preview(p);
@@ -205,14 +245,20 @@ export function makePaintEngine(canvasRef, apiRef, resolveLayer) {
   };
   const commit = async item => {
     const { profile, samples, stamp, api } = item;
-    if (closed || !profile.opacity || apiRef.current !== api) return;
+    const color = fillPaint(profile);
+    const smoothing = profile.smoothing / 100;
+    const outline = [];
+    if (color !== "transparent") traceStroke(point => outline.push([point.x, point.y]), samples, smoothing);
+    const fill = isClosedOutline(outline);
+    const hasInk = profile.opacity > 0 && brushControlValue(profile, "flow") > 0;
+    if (closed || (!hasInk && !fill) || apiRef.current !== api) return;
     const layer = resolveLayer(profile, item.layer);
     if (!layer.allowed) return;
     let bounds = brushBounds(samples, profile), previous, prior;
-    if (profile.engine === "water" && !item.skipBlend) {
+    if (profile.engine === "water" && !fill && !item.skipBlend) {
       const current = api.getSceneElements();
       const top = current.findLast(element => (element.customData?.infiniteLayer || "layer-base") === layer.id);
-      if (top?.customData?.paintKind === "water" && top.type === "image" && !top.locked && !top.angle &&
+      if (top?.customData?.paintKind === "water" && !top.customData.infinitePaintFill && top.type === "image" && !top.locked && !top.angle &&
           !top.crop && top.scale?.every(value => value === 1) && overlaps(bounds, top)) {
         const expanded = { x: Math.min(bounds.x, top.x), y: Math.min(bounds.y, top.y),
           right: Math.max(bounds.right, top.x + top.width), bottom: Math.max(bounds.bottom, top.y + top.height) };
@@ -232,18 +278,18 @@ export function makePaintEngine(canvasRef, apiRef, resolveLayer) {
     const ctx = output.getContext("2d");
     if (prior) ctx.drawImage(prior, (previous.x - bounds.x) * scale, (previous.y - bounds.y) * scale,
       previous.width * scale, previous.height * scale);
+    if (fill) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      for (const [x, y] of outline) ctx.lineTo((x - bounds.x) * scale, (y - bounds.y) * scale);
+      ctx.closePath();
+      ctx.fill("evenodd");
+    }
     const ink = document.createElement("canvas");
     ink.width = output.width;
     ink.height = output.height;
     const trace = sampler(profile, stamp, ink.getContext("2d"), bounds, scale);
-    const smoothing = profile.smoothing / 100;
-    if (smoothing === 1 && samples.length > 1) [samples[0], samples.at(-1)].forEach(trace);
-    else samples.forEach((sample, index) => {
-      if (!index || index === samples.length - 1 || !smoothing) { trace(sample); return; }
-      const a = samples[index - 1], b = samples[index + 1];
-      trace({ ...sample, x: sample.x + ((a.x + b.x) / 2 - sample.x) * smoothing,
-        y: sample.y + ((a.y + b.y) / 2 - sample.y) * smoothing });
-    });
+    if (hasInk) traceStroke(trace, samples, smoothing);
     ctx.globalAlpha = profile.opacity / 100;
     ctx.globalCompositeOperation = prior ? "multiply" : "source-over";
     ctx.drawImage(ink, 0, 0);
@@ -255,6 +301,7 @@ export function makePaintEngine(canvasRef, apiRef, resolveLayer) {
     const geometry = { x: bounds.x, y: bounds.y, width: output.width / scale, height: output.height / scale, fileId };
     api.addFiles([{ id: fileId, dataURL, mimeType: "image/png", created: Date.now() }]);
     const customData = { paintKind: profile.engine, infiniteBrush: { id: profile.id, name: profile.name, color: profile.color },
+      ...(fill && { infinitePaintFill: true }),
       ...(layer.id && { infiniteLayer: layer.id }) };
     const next = previous ? all.map(element => {
       if (element.id !== previous.id) return element;

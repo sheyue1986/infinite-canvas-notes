@@ -1,8 +1,9 @@
 import { CaptureUpdateAction, convertToExcalidrawElements, newElementWith } from "@excalidraw/excalidraw";
 import { hexColor } from "./colors.jsx";
 import { withElementOpacity } from "./layers.jsx";
+import { fillableShapes, isClosedOutline, readFillPaint } from "./closed-fill.js";
 
-const shapes = new Set(["rectangle", "ellipse", "diamond"]);
+const shapes = fillableShapes;
 const strokes = new Set(["line", "arrow", "freedraw"]);
 const regionSize = 512;
 const maxEdges = 12000;
@@ -10,16 +11,15 @@ const searchRadii = [128, 384, 1152, 3456];
 const layerId = element => element.customData?.infiniteLayer || "layer-base";
 const isFill = element => !!element.customData?.infiniteBucket;
 const hasPaint = color => !!color && color !== "transparent";
-const closed = points => points.length > 2 && points[0][0] === points.at(-1)[0] && points[0][1] === points.at(-1)[1];
 const colorDistance = (r, g, b, red, green, blue) => Math.max(Math.abs(r - red), Math.abs(g - green), Math.abs(b - blue));
 const noRegion = { zh: "容差范围内未找到可填充的闭合区域。", en: "No enclosed region within this tolerance." };
 
 function blendColor(color, base, opacity) {
-  const value = hexColor(color);
+  const { fillColor: value, fillOpacity } = readFillPaint(color, null);
   if (!value) return base;
   return base.map((channel, index) => {
     const over = parseInt(value.slice(1 + index * 2, 3 + index * 2), 16);
-    return Math.round(channel + (over - channel) * opacity);
+    return Math.round(channel + (over - channel) * opacity * fillOpacity / 100);
   });
 }
 
@@ -57,7 +57,7 @@ function outline(element) {
   const cos = Math.cos(angle), sin = Math.sin(angle);
   const points = local.map(([px, py]) => [x + cx + (px - cx) * cos - (py - cy) * sin,
     y + cy + (px - cx) * sin + (py - cy) * cos]);
-  return { element, points, box: bounds(points), closed: shapes.has(type) || closed(local) };
+  return { element, points, box: bounds(points), closed: shapes.has(type) || type !== "arrow" && isClosedOutline(local) };
 }
 
 function contains({ points, box }, { x, y }) {
@@ -218,7 +218,7 @@ export function fillAt(api, point, brush, layers) {
   };
   const shape = geometry.findLast(item => shapes.has(item.element.type) && contains(item, point));
   if (shape && brush.opacity === 100 && editable(shape) &&
-      [shape.element.strokeColor, shape.element.backgroundColor].every(color => !hasPaint(color) || hexColor(color)) &&
+      [shape.element.strokeColor, shape.element.backgroundColor].every(color => !hasPaint(color) || readFillPaint(color, null).fillColor) &&
       !paint.some(item => item !== shape && overlaps(item.box, shape.box))) {
     const element = shape.element;
     const outside = blendColor(background, [255, 255, 255], 1);

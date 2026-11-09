@@ -12,6 +12,9 @@ const fields = [
 
 export function PrecisionPanel({ value, change, start, section, setSection, editing, setEditing, openGuide, openGrid }) {
   const patch = changes => change({ ...value, ...changes });
+  const mapScale = value.mapScale?.metersPerPoint / unitMeters[value.unit];
+  const hasMapScale = Number.isFinite(mapScale) && mapScale > 0;
+  const usingMapScale = hasMapScale && Math.abs((value.scale ?? 0) / mapScale - 1) < 1e-8;
   const numeric = (label, key, min, max, step = 1) => <label>{label}<input type="number" min={min} max={max} step={step}
     key={value[key]} defaultValue={value[key]} onBlur={event => {
       const next = event.target.valueAsNumber;
@@ -35,6 +38,14 @@ export function PrecisionPanel({ value, change, start, section, setSection, edit
         {select("类型", "gridType", gridTypes)}
         {perspectiveCount(value.gridType) ? numeric("密度", "density", 4, 32) : <>
           {numeric("间距 · pt", "spacing", 8, 1000)}
+          {value.scale && <label>实地间距 · {value.unit}<input type="number" min={8 * value.scale} max={1000 * value.scale} step="any"
+            key={value.spacing + ":" + value.scale} defaultValue={Number((value.spacing * value.scale).toPrecision(8))}
+            onBlur={event => {
+              const interval = event.target.valueAsNumber / value.scale;
+              const spacing = Number.isFinite(interval) && interval > 0 ? Math.min(1000, Math.max(8, interval)) : value.spacing;
+              if (spacing !== value.spacing) patch({ spacing });
+              event.target.value = Number((spacing * value.scale).toPrecision(8));
+            }} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); }} /></label>}
           {numeric("细分", "divisions", 1, 10)}
         </>}
         {numeric("线宽", "weight", .5, 4, .25)}
@@ -60,6 +71,10 @@ export function PrecisionPanel({ value, change, start, section, setSection, edit
           if (ratio) patch({ scale: ratio * .0254 / 96 / unitMeters[value.unit] });
         }}><option value="">选择 1:n</option>{[1, 10, 20, 50, 100, 200, 500].map(ratio => <option key={ratio} value={ratio}>1:{ratio}</option>)}</select></label>
         <small>{value.scale ? "100 pt = " + measured(100, value) : "比例未校准，使用画布点数"}</small>
+        {hasMapScale && <small>{usingMapScale
+          ? value.mapScale.source === "street" ? "地图比例 · 按取景中心纬度换算" : "影像比例 · 按输入的实地宽度换算"
+          : "当前使用修改后的比例，可恢复创建底图时的换算。"}</small>}
+        {hasMapScale && !usingMapScale && <button onClick={() => patch({ scale: mapScale })}>恢复底图比例</button>}
         <button onClick={() => start("calibrate")}>两点校准比例</button>
         <button onClick={() => start("measure")}>标注长度</button>
         {value.scale && <button onClick={() => patch({ scale: null })}>重置比例</button>}

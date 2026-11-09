@@ -473,7 +473,8 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
         if (saved?.elements && active) {
           const migrated = migrateNativeElementLinks(saved.elements, saved.relationships || {});
           const cleanElements = withoutNativeLinks(saved.elements);
-          setCanvasInitialData({ ...saved, elements: cleanElements, relationships: migrated.relationships, scrollToContent: !!modelView || saved.scrollToContent });
+          setCanvasInitialData({ ...saved, elements: cleanElements, relationships: migrated.relationships,
+            scrollToContent: !!modelView || !!saved.precision?.mapScale || saved.scrollToContent });
           setBackgroundColor(saved.appState?.viewBackgroundColor || "#f2f2f7");
           setRelationships(migrated.relationships);
           setRelationshipCollections(saved.relationshipCollections || {});
@@ -1961,13 +1962,19 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
               finalizeBrush(stroke, strokeProfile.current, strokePointer.current, mutateElement, strokeRelease.current);
               const settings = precisionRef.current;
               const held = strokeHold.current?.held || 0;
-              if (settings.guide || settings.snap && settings.grid || settings.recognize && held >= settings.hold) {
+              const applyPrecision = settings.guide || settings.snap && settings.grid || settings.recognize && held >= settings.hold;
+              const finalPressure = stroke.simulatePressure ? undefined : stroke.pressures.at(-1);
+              if (applyPrecision || finalPressure !== undefined) {
                 const api = apiRef.current;
-                // Excalidraw appends its raw release point after this callback returns.
+                // Excalidraw appends the raw pointer-up sample after this callback returns.
                 queueMicrotask(() => {
                   if (api !== apiRef.current) return;
                   const completed = api.getSceneElements().find(element => element.id === stroke.id);
-                  if (completed) preciseStroke(completed, settings, held, (element, updates) => mutateElement(element, updates));
+                  if (!completed) return;
+                  if (finalPressure !== undefined && completed.pressures.at(-1) !== finalPressure) {
+                    mutateElement(completed, { pressures: [...completed.pressures.slice(0, -1), finalPressure] });
+                  }
+                  if (applyPrecision) preciseStroke(completed, settings, held, (element, updates) => mutateElement(element, updates));
                 });
               }
             }

@@ -91,11 +91,23 @@
 .brush-wheel .brush-core-opacity { top: 116px; left: 101px; }
 .brush-wheel .brush-core-smoothing { top: 116px; right: 101px; }
 .brush-kit .brush-core .brush-color {
-  width: 38px; height: 38px; border: 1px solid #b6bcb8; border-radius: 50%;
-  background: var(--brush-color); box-shadow: 0 0 0 2px #fff;
+  flex: none; padding: 0; border: 1px solid #a6ada8; border-radius: 50%; box-shadow: 0 0 0 2px #fff;
+  background: var(--brush-color);
 }
-.brush-wheel .brush-color { top: 99px; left: 99px; transform: translate(-50%, -50%); }
-.brush-kit .brush-core .brush-color.is-mixed { background: conic-gradient(#dad0ee 25%, #faf9fb 0 50%, #dad0ee 0 75%, #faf9fb 0); background-size: 12px 12px; }
+.brush-kit .brush-core .brush-stroke-color { width: 38px; height: 38px; }
+.brush-wheel .brush-stroke-color { top: 99px; left: 99px; transform: translate(-50%, -50%); }
+.brush-kit .brush-core .brush-fill-color {
+  width: 18px; height: 18px;
+  background: linear-gradient(var(--brush-color), var(--brush-color)),
+    conic-gradient(#dbe0dc 25%, #fff 0 50%, #dbe0dc 0 75%, #fff 0) 0 0 / 8px 8px;
+}
+.brush-wheel .brush-fill-color { top: 68px; left: 132px; transform: translate(-50%, -50%); }
+.brush-kit .brush-core .brush-fill-color:disabled { opacity: .45; }
+.brush-kit .brush-core .brush-color.is-mixed { background: repeating-linear-gradient(135deg, #dad0ee 0 3px, #faf9fb 3px 6px); }
+.brush-kit .brush-core .brush-color:hover:not(:disabled), .brush-kit .brush-core .brush-color[aria-expanded="true"] {
+  box-shadow: inset 0 0 0 2px #ad91d4;
+}
+.brush-kit .brush-core .brush-color:focus-visible { z-index: 1; outline: 2px solid #7957ad; }
 .brush-bar .brush-core.is-inspecting { background: #f1edf8; border-radius: 5px; }
 .brush-wheel .brush-actions {
   position: absolute; left: 11px; bottom: -28px; right: 11px; display: flex; justify-content: center; gap: 3px;
@@ -110,7 +122,8 @@
   padding: 5px; border: 1px solid #e0e5e0; border-radius: 10px; background: #fff; box-shadow: 0 3px 12px #18241a14;
 }
 .brush-bar .brush-core, .brush-bar .brush-actions { display: flex; align-items: center; gap: 2px; }
-.brush-bar .brush-core .brush-color { width: 22px; height: 22px; }
+.brush-kit .brush-bar .brush-core .brush-stroke-color { width: 22px; height: 22px; }
+.brush-kit .brush-bar .brush-core .brush-fill-color { width: 16px; height: 16px; margin-inline: 3px; }
 .brush-popover {
   position: absolute; left: 211px; bottom: 0; width: min(334px, calc(100vw - 245px)); max-height: min(655px, calc(100dvh - 135px));
   overflow: auto; overscroll-behavior: contain; background: #fff; border: 1px solid #dce1dc;
@@ -127,12 +140,24 @@
 .brush-popover header button[aria-pressed="true"]:hover { background: #e8ebe7; }
 .brush-popover header .brush-layout { margin-left: auto; }
 .brush-preview {
-  display: block; width: calc(100% - 20px); height: 93px; margin: 10px 10px 0; touch-action: none; cursor: crosshair;
+  width: calc(100% - 20px); height: 93px; margin: 10px 10px 0; overflow: hidden;
   border: 1px solid #dce1dc; border-radius: 6px; background-color: #fff;
   background-image: conic-gradient(#eff1ee 25%, transparent 0 50%, #eff1ee 0 75%, transparent 0);
   background-size: 12px 12px;
 }
-.brush-preview-caption { display: flex; justify-content: space-between; padding: 5px 10px; color: #515a52; }
+.brush-preview canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+.brush-preview-caption { display: flex; gap: 7px; align-items: center; padding: 5px 10px; color: #515a52; }
+.brush-preview-caption strong { flex: 1; overflow-wrap: anywhere; }
+.brush-preview-caption button, .brush-detail-tabs button {
+  border: 0; border-radius: 5px; background: #eef0ed; padding: 4px 7px; font: inherit;
+}
+.brush-detail-tabs { display: flex; gap: 4px; padding: 4px 10px 7px; }
+.brush-detail-tabs button { flex: 1; }
+.brush-detail-tabs button[aria-pressed="true"] { background: #eee9f5; color: #593e84; font-weight: 600; }
+.brush-response-graph { width: 100%; height: 64px; border-radius: 6px; background: #f7f5fa; }
+.brush-response-graph path { fill: none; stroke: #dfd9e8; }
+.brush-response-graph polyline { fill: none; stroke: #704ea6; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.brush-response-labels { display: flex; justify-content: space-between; color: #69616f; font-size: 11px; }
 .brush-popover section { padding: 5px 10px; border-top: 1px solid #eef0ee; }
 .brush-popover h3 { margin: 4px 0; font-size: 13px; }
 .brush-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 3px; }

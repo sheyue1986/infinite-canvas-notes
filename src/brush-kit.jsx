@@ -1,9 +1,12 @@
 import React, { memo, useEffect, useRef, useState } from "react";
 import { CaptureUpdateAction, newElementWith } from "@excalidraw/excalidraw";
 import { imageTint, importStamp, tintImage } from "./paint-engine.js";
+import { brushControlValue, brushDynamics, brushResponse, responseControls, speedPressure, tipControls, vectorBrushStroke } from "./brush-response.js";
+import { BrushPreview } from "./brush-preview.jsx";
+import { defaultFill, fillableShapes, fillPaint, isClosedOutline, readFillPaint, supportsClosedFill } from "./closed-fill.js";
 import { CanvasSampler, ColorFan, ColorPanel, QuickColors, hexColor, useColors } from "./colors.jsx";
 import { elementOpacity, withElementOpacity } from "./layers.jsx";
-import { dashPattern, defaultDashDensity } from "./line-style.js";
+import { defaultDashDensity } from "./line-style.js";
 import "./brush-kit.css";
 
 const brush = (id, name, en, width, opacity, smoothing, dynamics, mark) =>
@@ -51,7 +54,6 @@ const toolKeyAliases = new Map([
 ]);
 export const isDefaultToolKey = key => !!key && (directToolKeys.has(key.toLowerCase()) || toolKeyAliases.has(key));
 const defaultPresets = { width: [1, 2, 6, 12], opacity: [25, 50, 75, 100], smoothing: [0, 25, 50, 100], tolerance: [0, 32, 64, 128] };
-const brushDynamics = [["pressure", "压感", "Pressure"], ["speed", "速度", "Speed"], ["inverse", "反向速度", "Inverse speed"], ["fixed", "固定宽度", "Fixed width"]];
 const key = "infinite-canvas-brush-kit-v1";
 const clamp = (n, min, max) => Math.min(max, Math.max(min, Number(n)));
 const metrics = {
@@ -72,14 +74,17 @@ function readSettings() {
 const styled = new Set(["freedraw", "line", "rectangle", "ellipse", "diamond", "arrow", "text"]);
 const toolHasStyle = type => styled.has(type) || type === "bucket";
 export const hasLineStyle = type => styled.has(type) && type !== "text";
-const filled = new Set(["rectangle", "ellipse", "diamond"]);
+const canEditFill = element => !element.customData?.infiniteBucket &&
+  (fillableShapes.has(element.type) || supportsClosedFill(element.type) && isClosedOutline(element.points));
+const objectFill = element => readFillPaint(element.backgroundColor, element.customData?.infiniteFillColor);
 const elementStyle = {
   color: [element => styled.has(element.type) || element.type === "image", element => element.type === "image" ?
     imageTint(element)?.color ?? element.customData?.infiniteBrush?.color ?? null :
     element.customData?.infiniteBucket ? element.backgroundColor : element.strokeColor, "strokeColor"],
   width: [element => styled.has(element.type) && element.type !== "text" && !element.customData?.infiniteBucket, element => element.strokeWidth, "strokeWidth"],
   opacity: [element => element.type !== "frame" && element.type !== "magicframe", elementOpacity],
-  fill: [element => filled.has(element.type), element => element.backgroundColor, "backgroundColor"],
+  fillColor: [canEditFill, element => objectFill(element).fillColor],
+  fillOpacity: [canEditFill, element => objectFill(element).fillOpacity],
   fontSize: [element => element.type === "text", element => element.fontSize],
   strokeStyle: [element => hasLineStyle(element.type) && !element.customData?.infiniteBucket, element => element.strokeStyle, "strokeStyle"],
   dashDensity: [element => hasLineStyle(element.type) && !element.customData?.infiniteBucket, element => element.customData?.infiniteDashDensity ?? defaultDashDensity],
@@ -108,7 +113,7 @@ function selectedStyle(elements) {
 function entry(settings, id, slot) {
   const item = basics.find(item => item.id === id) || tools.find(item => item.id === id) || settings.custom.find(item => item.id === id);
   if (!item || !toolHasStyle(item.type)) return item;
-  return { width: 2, opacity: 100, color: "#1b1b1f", strokeStyle: "solid", dashDensity: defaultDashDensity, ...item, ...(slot === undefined ? {} :
+  return { width: 2, opacity: 100, color: "#1b1b1f", strokeStyle: "solid", dashDensity: defaultDashDensity, ...defaultFill, ...item, ...(slot === undefined ? {} :
     settings.slotValues[`${slot}:${id}`] || settings.changes[id]) };
 }
 
@@ -136,6 +141,7 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
   const applyProperties = (api, tool) => api.updateScene({ appState: {
     currentItemStrokeWidth: tool.width, currentItemOpacity: tool.opacity, currentItemStrokeColor: tool.color,
     currentItemStrokeStyle: tool.strokeStyle || "solid",
+    ...(supportsClosedFill(tool.type) && { currentItemBackgroundColor: fillPaint(tool), currentItemFillStyle: "solid" }),
   } });
   const apply = (next, tool, activate, shortcut = null) => {
     latest.current = next;
@@ -174,15 +180,16 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
     if (!next) setPanel(current => ["selection", "native", "dimensions"].includes(current) ? null : current);
   };
   const edit = (slot = latest.current.slot) => { setShown(true); setEditedSlot(slot); setPanel("library"); };
-  const activate = (index, openIfActive = true) => {
+  const activate = (index, openDetails = true) => {
     const old = latest.current;
     const tool = entry(old, old.slots[index], index);
-    if (openIfActive && !shortcutTool && index === old.slot && index === activeSlot) {
+    if (openDetails && tool?.type !== "freedraw" && !shortcutTool && index === old.slot && index === activeSlot) {
       edit(index);
       return;
     }
     apply({ ...old, slot: index }, tool, true);
-    setPanel(null);
+    setEditedSlot(index);
+    setPanel(openDetails && tool?.type === "freedraw" ? "brushDetail" : null);
   };
   const activateById = id => {
     const old = latest.current;
@@ -194,7 +201,9 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
   const assign = id => {
     const old = latest.current;
     const slots = old.slots.map((value, index) => index === editedSlot ? id : value);
-    apply({ ...old, slots, slot: editedSlot }, entry(old, id, editedSlot), true);
+    const tool = entry(old, id, editedSlot);
+    apply({ ...old, slots, slot: editedSlot }, tool, true);
+    if (tool?.type === "freedraw") setPanel("brushDetail");
   };
   const setMany = (values, expected) => {
     const api = apiRef.current;
@@ -213,6 +222,7 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
       const commit = (scene, raster = new Map()) => {
         if (!scene) return false;
         const changed = new Map();
+        const editsFill = updates.some(([property]) => property === "fillColor" || property === "fillOpacity");
         for (const element of scene.selected) {
           const patch = {};
           for (const [property, value] of updates) {
@@ -221,6 +231,15 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
               patch[property === "color" && element.customData?.infiniteBucket ? "backgroundColor" : attribute] = value;
             }
             if (property === "dashDensity" && read(element) !== value) patch.customData = { ...element.customData, infiniteDashDensity: value };
+          }
+          if (editsFill && canEditFill(element)) {
+            const old = objectFill(element);
+            const next = { fillColor: values.fillColor ?? old.fillColor, fillOpacity: values.fillOpacity ?? old.fillOpacity };
+            if (next.fillColor !== old.fillColor || next.fillOpacity !== old.fillOpacity) {
+              patch.backgroundColor = fillPaint(next);
+              patch.fillStyle = "solid";
+              patch.customData = { ...element.customData, ...patch.customData, infiniteFillColor: next.fillColor };
+            }
           }
           const tint = raster.get(element.id);
           if (tint) {
@@ -342,10 +361,13 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
       const texture = template.engine === "stamp" && typeof profile.texture === "string" && profile.texture.length <= 220000 &&
         /^data:image\/png;base64,[a-z0-9+/=]+$/i.test(profile.texture) ? profile.texture : undefined;
       savePreset({ ...template, mark, texture, color: hexColor(profile.color) || template.color,
+        fillColor: hexColor(profile.fillColor) || defaultFill.fillColor, fillOpacity: numeric("fillOpacity", 0, 0, 100),
         width: numeric("width", template.width, .5, 24), opacity: numeric("opacity", template.opacity, 0, 100),
         smoothing: numeric("smoothing", template.smoothing, 0, 100), dashDensity: numeric("dashDensity", defaultDashDensity, 0, 100),
         dynamics: brushDynamics.some(([id]) => id === profile.dynamics) ? profile.dynamics : template.dynamics,
         strokeStyle: profile.strokeStyle === "dashed" ? "dashed" : "solid",
+        ...Object.fromEntries(Object.keys({ ...responseControls, ...tipControls }).filter(key => Number.isFinite(profile[key]))
+          .map(key => [key, brushControlValue({ ...profile, engine: template.engine }, key)])),
       }, profile.name.trim());
     },
     reset: () => {
@@ -385,32 +407,10 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
 }
 
 export function finalizeBrush(stroke, profile, pointerType, mutate, release) {
-  const count = stroke.points.length;
-  if (!count) return;
-  const amount = (profile?.smoothing ?? 25) / 100;
-  const last = stroke.points.at(-1);
-  const end = release ? [release.x - stroke.x, release.y - stroke.y] : last;
-  const straight = amount === 1 && count > 1;
-  const points = straight ? [stroke.points[0], end] : stroke.points.map((point, index, all) => {
-    if (!index || index === count - 1 || !amount) return point;
-    const [x, y] = point;
-    return [x + ((all[index - 1][0] + all[index + 1][0]) / 2 - x) * amount,
-      y + ((all[index - 1][1] + all[index + 1][1]) / 2 - y) * amount];
-  });
-  const dynamics = profile?.dynamics || "pressure";
-  const fixed = dynamics === "fixed" || dynamics === "pressure" && pointerType === "mouse";
-  const speed = dynamics === "speed" || dynamics === "inverse";
-  let pressures = stroke.pressures;
-  if (fixed) pressures = points.map(() => .5);
-  else if (speed) {
-    pressures = points.map(([x, y], index) => {
-      const previous = points[index - 1];
-      const distance = previous ? Math.hypot(x - previous[0], y - previous[1]) : 0;
-      const normalized = Math.min(.72, distance / Math.max(8, stroke.strokeWidth * 8));
-      return dynamics === "speed" ? .82 - normalized : .23 + normalized;
-    });
-  } else if (straight && pressures.length) pressures = [pressures[0], pressures.at(-1)];
-  mutate(stroke, { points, ...(fixed || speed ? { simulatePressure: false, pressures } : { pressures }),
+  if (!stroke.points.length) return;
+  const end = release ? [release.x - stroke.x, release.y - stroke.y] : undefined;
+  const geometry = vectorBrushStroke(stroke.points, stroke.pressures, profile || {}, pointerType, stroke.strokeWidth, end);
+  mutate(stroke, { ...geometry,
     ...(profile && { strokeStyle: profile.strokeStyle || "solid", customData: { ...stroke.customData,
       infiniteBrush: { id: profile.id, name: profile.name }, ...(profile.strokeStyle === "dashed" && { infiniteDashDensity: profile.dashDensity }) } }) }, false);
 }
@@ -451,43 +451,101 @@ function Glyph({ name, size = 19 }) {
     strokeWidth={name === "marker" ? 5 : name === "bold" ? 2.8 : 1.65} strokeLinecap="round" strokeLinejoin="round"><path d={glyphs[name] || glyphs.pen} /></svg>;
 }
 
-function Preview({ pen, zh }) {
-  const path = useRef(null);
-  const drawing = useRef(null);
-  const sample = pen.smoothing === 100 ? "M28 62L287 32" : "M23 72C60 51 130 29 143 40S123 77 154 58S179 33 187 43S176 67 206 57S233 64 289 42";
-  return <svg className="brush-preview" viewBox="0 0 312 104" aria-label={zh ? "在这里试画笔刷" : "Try the brush here"}
-    onPointerDown={event => {
-      const box = event.currentTarget.getBoundingClientRect();
-      const point = [((event.clientX - box.left) / box.width) * 312, ((event.clientY - box.top) / box.height) * 104];
-      drawing.current = { box, start: point, d: "M" + point.join(" "), count: 0 };
-      event.currentTarget.setPointerCapture(event.pointerId);
-      path.current.setAttribute("d", drawing.current.d + "l.01 .01");
-    }} onPointerMove={event => {
-      const d = drawing.current;
-      if (!d || d.count++ >= 260) return;
-      const point = [((event.clientX - d.box.left) / d.box.width) * 312, ((event.clientY - d.box.top) / d.box.height) * 104];
-      d.d = pen.smoothing === 100 ? "M" + d.start.join(" ") + "L" + point.join(" ") : d.d + "L" + point.join(" ");
-      path.current.setAttribute("d", d.d);
-    }} onPointerUp={() => { drawing.current = null; }} onPointerCancel={() => { drawing.current = null; }}>
-    <path ref={path} d={sample} fill="none" stroke={pen.color} opacity={pen.opacity / 100}
-      strokeDasharray={pen.strokeStyle === "dashed" ? dashPattern(pen.width, pen.dashDensity, 1.9).join(" ") : undefined}
-      strokeWidth={Math.max(1, pen.width * 1.9)} strokeLinecap="round" strokeLinejoin="round" />
-  </svg>;
-}
-
 function LineControls({ target, kit, zh }) {
   const pointer = useRef(false);
   return <div className="brush-property brush-line-controls">
     <div><span>{zh ? "线型" : "Line style"}</span>{[["solid", "实线", "Solid"], ["dashed", "虚线", "Dashed"]].map(([id, cn, en]) =>
       <button type="button" key={id} aria-pressed={target.strokeStyle === id} onClick={() => kit.set("strokeStyle", id)}>{zh ? cn : en}</button>)}</div>
     {target.strokeStyle === "dashed" && <label>{zh ? "虚线密度" : "Dash density"}
-      <input type="range" min="0" max="100" key={target.dashDensity} defaultValue={target.dashDensity ?? defaultDashDensity}
+      {!kit.selection ? <input type="range" min="0" max="100" value={target.dashDensity ?? defaultDashDensity}
+        onChange={event => kit.set("dashDensity", event.target.valueAsNumber)} />
+      : <input type="range" min="0" max="100" key={target.dashDensity} defaultValue={target.dashDensity ?? defaultDashDensity}
         onPointerDown={event => { pointer.current = true; event.currentTarget.setPointerCapture(event.pointerId); }}
         onPointerCancel={() => { pointer.current = false; }}
         onPointerUp={event => { if (pointer.current) { pointer.current = false; kit.set("dashDensity", event.currentTarget.valueAsNumber); } }}
-        onChange={event => { if (!pointer.current) kit.set("dashDensity", event.currentTarget.valueAsNumber); }} />
+        onChange={event => { if (!pointer.current) kit.set("dashDensity", event.currentTarget.valueAsNumber); }} />}
     </label>}
   </div>;
+}
+
+function FineControl({ id, metric, kit, zh }) {
+  const title = zh ? metric.zh : metric.en;
+  const value = brushControlValue(kit.pen, id);
+  const [draft, setDraft] = useState(null);
+  const commit = () => {
+    if (draft !== null && draft !== "" && Number.isFinite(Number(draft))) {
+      kit.set(id, clamp(Math.round(Number(draft)), metric.min, metric.max));
+    }
+    setDraft(null);
+  };
+  return <div className="brush-property">
+    <label>{title}<input type="number" min={metric.min} max={metric.max} step="1" value={draft ?? value}
+      aria-label={title + (zh ? "数值" : " value")} onChange={event => setDraft(event.target.value)} onBlur={commit}
+      onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); }} /><span>{metric.unit}</span></label>
+    <input aria-label={title} type="range" min={metric.min} max={metric.max} value={value}
+      onChange={event => { setDraft(null); kit.set(id, event.target.valueAsNumber); }} />
+  </div>;
+}
+
+function DynamicsControls({ kit, zh }) {
+  const { pen } = kit;
+  const fixed = pen.dynamics === "fixed";
+  const speed = pen.dynamics === "speed" || pen.dynamics === "inverse";
+  const curve = Array.from({ length: 25 }, (_, i) => {
+    const t = i / 24;
+    const input = speed ? speedPressure(t * .72 * Math.max(8, pen.width * 8), pen.width, pen.dynamics) : t;
+    return [4 + t * 232, 55 - 50 * (fixed ? .5 : brushResponse(input, pen))].join(",");
+  }).join(" ");
+  return <>
+    <div className="brush-property brush-dynamics">
+      <label>{zh ? "输入来源" : "Input source"}<select value={pen.dynamics} onChange={event => kit.set("dynamics", event.target.value)}>
+        {brushDynamics.map(([id, cn, en]) => <option value={id} key={id}>{zh ? cn : en}</option>)}
+      </select></label>
+      <svg className="brush-response-graph" viewBox="0 0 240 60" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M4 5H236M4 30H236M4 55H236M4 5V55M120 5V55M236 5V55" />
+        <polyline points={curve} />
+      </svg>
+      <div className="brush-response-labels"><span>{zh ? "输入低" : "Low input"}</span><span>{zh ? "输入高" : "High input"}</span></div>
+      {pen.dynamics === "pressure" && <small>{zh ? "示例使用模拟压感，鼠标试画时压力固定。" : "The sample simulates pen pressure. Mouse strokes use constant pressure."}</small>}
+    </div>
+    {!fixed && Object.entries(responseControls).map(([id, metric]) => <FineControl key={id} {...{ id, metric, kit, zh }} />)}
+  </>;
+}
+
+function FillOpacity({ target, kit, zh, compact = false }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(null);
+  const dragging = useRef(false);
+  const opacity = draft ?? target.fillOpacity;
+  const label = zh ? "填充不透明度" : "Fill opacity";
+  const value = opacity == null ? (zh ? "混合" : "Mixed") : `${opacity}%`;
+  const controls = <div className="fill-opacity-controls">
+      <label><span>{label}</span><output>{value}</output>
+      <input aria-label={label} type="range" min="0" max="100" value={opacity ?? 50}
+        onPointerDown={event => {
+          if (!kit.selection || event.button !== 0) return;
+          dragging.current = true;
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onChange={event => {
+          const value = event.target.valueAsNumber;
+          if (dragging.current) setDraft(value); else kit.set("fillOpacity", value);
+        }}
+        onPointerUp={event => {
+          if (!dragging.current) return;
+          dragging.current = false;
+          kit.set("fillOpacity", event.currentTarget.valueAsNumber);
+          setDraft(null);
+        }}
+        onPointerCancel={() => { dragging.current = false; setDraft(null); }} /></label>
+      <button type="button" disabled={target.fillOpacity === 0} onClick={() => kit.set("fillOpacity", 0)}>
+        {zh ? "设为透明" : "Make transparent"}</button>
+    </div>;
+  return compact ? <div className="color-fan-fill-opacity">
+    <button type="button" aria-label={label} aria-expanded={open} title={label} onClick={() => setOpen(value => !value)}>
+      {zh ? "填充" : "Fill"} {value}</button>
+    {open && controls}
+  </div> : controls;
 }
 
 function sector(index) {
@@ -504,16 +562,29 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
   const colors = useColors();
   const [sampleRequest, setSampleRequest] = useState(null);
   const [error, setError] = useState("");
+  const [brushTab, setBrushTab] = useState("base");
+  const [previewVersion, setPreviewVersion] = useState(0);
   const { settings, pen, panel, shown, selection } = kit;
+  const brushDetail = !selection && panel === "brushDetail" && pen?.type === "freedraw";
+  const detailTab = brushTab === "tip" && !pen?.engine ? "base" : brushTab;
   const target = selection || pen;
   const hasColor = selection ? Object.hasOwn(selection, "color") : !!pen;
+  const hasFill = selection ? Object.hasOwn(selection, "fillOpacity") : supportsClosedFill(pen?.type);
   const currentColor = hexColor(target?.color) || "#1b1b1f";
+  const fillColor = hexColor(target?.fillColor) || defaultFill.fillColor;
+  const fillMode = panel === "fillFan" || panel === "fillPalette";
+  const fan = panel === "fan" || panel === "fillFan";
   const [draft, setDraft] = useState(null);
   const slider = useRef(false);
   const choose = async color => { if (await kit.setMany({ color })) colors.remember(color); };
-  const sample = alpha => {
-    if (!hasColor || !kit.apiRef.current) return;
-    setSampleRequest({ alpha, color: currentColor, id: pen?.id, slot: kit.activeSlot, selectionKey: selection?.key });
+  const fillValues = (color, opacity) => ({
+    fillColor: color,
+    ...(opacity !== undefined ? { fillOpacity: opacity } : target?.fillOpacity === 0 ? { fillOpacity: 100 } : {}),
+  });
+  const chooseFill = async color => { if (await kit.setMany(fillValues(color))) colors.remember(color); };
+  const sample = (alpha, fill = false) => {
+    if (!(fill ? hasFill : hasColor) || !kit.apiRef.current) return;
+    setSampleRequest({ alpha, fill, color: fill ? fillColor : currentColor, id: pen?.id, slot: kit.activeSlot, selectionKey: selection?.key });
     kit.setPanel(null);
   };
   const t = (cn, en) => zh ? cn : en;
@@ -525,7 +596,7 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
   const selectionName = selection && (selection.count > 1 ? t(`已选 ${selection.count} 个对象`, `${selection.count} selected objects`) :
     label(basics.find(item => item.id === selection.brushId) || settings.custom.find(item => item.id === selection.brushId) ||
       selectedTool || { name: selection.type === "freedraw" ? "笔迹" : "选中对象", en: selection.type === "freedraw" ? "Stroke" : "Selected object" }));
-  useEffect(() => { setDraft(null); slider.current = false; }, [selection?.key, panel]);
+  useEffect(() => { setDraft(null); slider.current = false; }, [selection?.key, pen?.id, panel]);
   useEffect(() => {
     if (!nativePanel || !kit.apiRef.current) return;
     const api = kit.apiRef.current;
@@ -555,7 +626,7 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
     const title = zh ? metric.name : metric.en;
     const value = draft?.property === property && draft?.key === selection?.key ? draft.value : target[property];
     const max = selection ? Math.max(metric.max, target[property] ?? 0) : metric.max;
-    const draftValue = value => setDraft({ key: selection.key, property, value });
+    const draftValue = value => setDraft({ key: selection?.key, property, value });
     const commit = value => {
       setDraft(null);
       if (value !== "") kit.set(property, clamp(property === "tolerance" ? Math.round(value) : value, metric.min, max));
@@ -563,11 +634,9 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
     return <div className="brush-property" key={property}>
       <label><Glyph name={metric.icon} size={15} /> {title}{target[property] === null && <small>{t("混合", "Mixed")}</small>}
         <input type="number" aria-label={title + t("数值", " value")} min={metric.min} max={max} step={metric.step}
-          value={value ?? ""} onChange={event => {
-            if (selection) draftValue(event.target.value);
-            else if (event.target.value !== "") commit(event.target.value);
-          }} onBlur={event => { if (selection && draft?.property === property) commit(event.target.value); }}
-          onKeyDown={event => { if (selection && event.key === "Enter") event.currentTarget.blur(); }} /><span>{metric.unit}</span></label>
+          value={value ?? ""} onChange={event => draftValue(event.target.value)}
+          onBlur={event => { if (draft?.property === property) commit(event.target.value); }}
+          onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); }} /><span>{metric.unit}</span></label>
       <input type="range" min={metric.min} max={max} step={metric.step} value={value === "" || value == null ? (metric.min + max) / 2 : value}
         aria-label={title} onChange={event => {
           if (selection && slider.current) draftValue(event.target.value);
@@ -587,7 +656,7 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
   };
   const iconButton = (glyph, title, run) => <button type="button" aria-label={title} title={title} onClick={run}><Glyph name={glyph} /></button>;
   const cards = items => <div className="brush-cards">{items.map(item => <button type="button" key={item.id} aria-pressed={settings.slots[kit.editedSlot] === item.id}
-      onClick={() => kit.assign(item.id)}><Glyph name={item.mark} /><span>{label(item)}</span></button>)}</div>;
+      onClick={() => { setBrushTab("base"); kit.assign(item.id); }}><Glyph name={item.mark} /><span>{label(item)}</span></button>)}</div>;
   const [canvasToolsOpen, setCanvasToolsOpen] = useState(false);
   const bucketActive = !selection && pen?.type === "bucket";
   const hasProperty = id => selection ? Object.hasOwn(selection, id) : !!pen &&
@@ -609,7 +678,8 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
             aria-label={`${t("工具槽", "Slot")} ${index + 1} · ${label(tool)}`}
             title={[label(tool), kit.keyForTool(tool.id), `Alt+${index + 1}`].filter(Boolean).join(" · ")}
             aria-keyshortcuts={[kit.keyForTool(tool.id), `Alt+${index + 1}`].filter(Boolean).join(" ")}
-            onClick={() => kit.activate(index)} onContextMenu={event => { event.preventDefault(); kit.edit(index); }}><Glyph name={tool.mark} /></button>;
+            onClick={() => { if (index !== kit.activeSlot || panel !== "brushDetail") setBrushTab("base"); kit.activate(index); }}
+            onContextMenu={event => { event.preventDefault(); kit.edit(index); }}><Glyph name={tool.mark} /></button>;
         })}
         {canvasToolsOpen ? <div className="brush-canvas-quick" role="group" aria-label={t("画布工具", "Canvas tools")}>
           {tools.filter(tool => tool.id === "magnifier" || tool.id === "lasso").map(tool => <button key={tool.id} type="button"
@@ -630,7 +700,8 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
             onClick={kit.toggleLineStyle} onContextMenu={event => { event.preventDefault(); kit.display("lineStyle"); }}>
             <Glyph name={kit.lineTarget.strokeStyle === "dashed" ? "dashedLine" : kit.lineTarget.strokeStyle === "solid" ? "solidLine" : "mixedLine"} size={15} />
           </button>}
-          <button type="button" className={`brush-color${hasColor && selection?.color === null ? " is-mixed" : ""}`} aria-label={selection ? t("对象颜色", "Object color") : t("笔刷颜色", "Brush color")}
+          <button type="button" className={`brush-color brush-stroke-color${hasColor && selection?.color === null ? " is-mixed" : ""}`}
+            aria-label={t("线颜色", "Stroke color")} title={t("线颜色", "Stroke color")} aria-expanded={panel === "fan"}
             onClick={() => { if (!colorHold.current.opened) kit.display("fan"); colorHold.current.opened = false; }}
             onContextMenu={event => { event.preventDefault(); kit.setPanel("color"); }}
             onPointerDown={event => {
@@ -640,6 +711,11 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
             }} onPointerUp={() => clearTimeout(colorHold.current.timer)} onPointerLeave={() => clearTimeout(colorHold.current.timer)}
             onPointerCancel={() => clearTimeout(colorHold.current.timer)}
             disabled={!hasColor} style={{ "--brush-color": hasColor ? currentColor : "#c6cbc7" }} />
+          <button type="button" className={`brush-color brush-fill-color${hasFill && (target.fillColor === null || target.fillOpacity === null) ? " is-mixed" : ""}`}
+            disabled={!hasFill} aria-label={t("填充颜色", "Fill color")}
+            title={hasFill ? t("填充颜色与不透明度", "Fill color and opacity") : t("当前工具或对象不支持闭合填充", "Fill is unavailable for this tool or object")}
+            aria-expanded={panel === "fillFan"} onClick={() => kit.display("fillFan")}
+            style={{ "--brush-color": hasFill ? fillPaint(target) : "transparent" }} />
         </div>}
         <div className="brush-actions">
           {kit.shortcutTool && kit.active && !["bucket", "zoom", "lasso"].includes(kit.active.type) &&
@@ -653,21 +729,33 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
             aria-label={selection ? t("对象属性", "Object properties") : t(name, "Brushes & tools")}>⋯</button>
           <button type="button" onClick={kit.toggle} aria-label={t("收起工具轮", "Collapse tool wheel")}>×</button>
         </div>
-        <QuickColors colors={colors} color={currentColor} choose={choose} active={hasColor} />
+        <QuickColors colors={colors} color={fillMode ? fillColor : currentColor} choose={fillMode ? chooseFill : choose}
+          active={fillMode ? hasFill : hasColor} />
       </div>}
     {shown && panel === "fan" && hasColor && <ColorFan colors={colors} color={currentColor} choose={choose}
-      openPalettes={() => kit.setPanel("color")} sample={sample} close={() => kit.setPanel(null)} />}
-    {shown && panel && panel !== "fan" && <aside className={`brush-popover${nativePanel ? " brush-native-header" : ""}`} aria-label={t(name, "Brushes & tools")}>
+      key="stroke" openPalettes={() => kit.setPanel("color")} sample={sample} close={() => kit.setPanel(null)} />}
+    {shown && panel === "fillFan" && hasFill && <ColorFan key="fill" colors={colors} color={fillColor} choose={chooseFill}
+      openPalettes={() => kit.setPanel("fillPalette")} sample={alpha => sample(alpha, true)} close={() => kit.setPanel(null)}
+      fillControls={<FillOpacity key={selection?.key ?? `${kit.activeSlot}:${pen.id}`} {...{ target, kit, zh }} compact />} />}
+    {shown && panel && !fan && <aside className={`brush-popover${nativePanel ? " brush-native-header" : ""}`} aria-label={t(name, "Brushes & tools")}>
       <header><button type="button" aria-label={t("关闭笔刷面板", "Close brush panel")} onClick={() => kit.setPanel(null)}>×</button>
-        <button type="button" aria-pressed={panel !== "color" && !nativePanel} onClick={() => selection && panel !== "library" ? kit.setPanel("selection") : kit.edit()}>{selection && panel !== "library" ? t("对象属性", "Properties") : t("笔刷", "Brushes")}</button>
+        <button type="button" aria-pressed={panel !== "color" && !fillMode && !nativePanel && !brushDetail} onClick={() => selection && panel !== "library" ? kit.setPanel("selection") : kit.edit()}>{selection && panel !== "library" ? t("对象属性", "Properties") : t("笔刷库", "Brush library")}</button>
+        {brushDetail && <button type="button" aria-pressed="true" onClick={() => setBrushTab("base")}>{t("笔刷设置", "Brush settings")}</button>}
         <button type="button" aria-pressed={panel === "color"} disabled={!!selection && !hasColor} onClick={() => kit.setPanel("color")}>{t("颜色", "Colors")}</button>
-        {selection && panel !== "library" && <>
+        {fillMode && <button type="button" aria-pressed="true" onClick={() => kit.setPanel("fillFan")}>{t("填充色轮", "Fill wheel")}</button>}
+        {selection && panel !== "library" && !fillMode && <>
           <button type="button" aria-pressed={panel === "native"} onClick={() => kit.setPanel("native")}>{t("原生样式", "Native styles")}</button>
           <button type="button" aria-pressed={panel === "dimensions"} onClick={() => kit.setPanel("dimensions")}>{t("尺寸与位置", "Size & position")}</button>
         </>}
         {(!selection || panel === "library") && <button type="button" className="brush-layout" onClick={kit.changeFormat}>{settings.format === "wheel" ? t("工具栏", "Toolbar") : t("工具轮", "Wheel")}</button>}</header>
       {selection && panel !== "library" && !nativePanel && <div className="brush-selection-label">{selectionName}</div>}
-      {!nativePanel && (panel === "color" ? hasColor ? <>
+      {!nativePanel && (panel === "fillPalette" ? hasFill && <>
+        <FillOpacity key={selection?.key ?? `${kit.activeSlot}:${pen.id}`} {...{ target, kit, zh }} />
+        <ColorPanel colors={colors} color={fillColor} choose={chooseFill} chooseCopic={async color => {
+          await chooseFill(color);
+          kit.setPanel("fillFan");
+        }} openWheel={() => kit.setPanel("fillFan")} />
+      </> : panel === "color" ? hasColor ? <>
         {selection?.canRestoreColor && <div className="brush-property brush-fill"><button type="button" onClick={() => kit.setMany({ restoreColor: true })}>{t("恢复原色", "Restore original colors")}</button></div>}
         <ColorPanel colors={colors} color={currentColor} choose={choose} chooseCopic={async color => {
           await choose(color);
@@ -676,20 +764,30 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
         }} openWheel={() => kit.setPanel("fan")} /></> :
         <p className="color-error">请先选中可设置颜色的工具。</p> : <>
         {pen?.type === "freedraw" && <>
-          <Preview key={pen.id} pen={pen} zh={zh} />
-          <div className="brush-preview-caption"><strong>{label(pen)}</strong><small>{pen.engine ? t("上方预览颜色和笔宽", "Color and width preview") : t("在上方试画", "Try a stroke above")}</small></div>
+          <BrushPreview key={pen.id + ":" + previewVersion} pen={pen} zh={zh} />
+          <div className="brush-preview-caption"><strong>{label(pen)}</strong><small>{t("在上方试画", "Try a stroke above")}</small>
+            <button type="button" onClick={() => setPreviewVersion(value => value + 1)}>{t("恢复示例", "Reset sample")}</button></div>
+        </>}
+        {brushDetail && <>
+          <div className="brush-detail-tabs" role="group" aria-label={t("笔刷参数分组", "Brush settings groups")}>
+            {[["base", "基础", "Basics"], ["dynamics", "动态", "Dynamics"], ...(pen.engine ? [["tip", "笔尖", "Tip"]] : [])].map(([id, cn, en]) =>
+              <button type="button" key={id} aria-pressed={detailTab === id} onClick={() => setBrushTab(id)}>{t(cn, en)}</button>)}
+          </div>
+          {detailTab === "base" && <>
+            {["width", "opacity", "smoothing"].map(control)}
+            <LineControls key={pen.id} target={pen} kit={kit} zh={zh} />
+          </>}
+          {detailTab === "dynamics" && <DynamicsControls key={pen.id} kit={kit} zh={zh} />}
+          {detailTab === "tip" && Object.entries(tipControls).map(([id, metric]) => <FineControl key={pen.id + id} {...{ id, metric, kit, zh }} />)}
         </>}
         {kit.lineTarget && (panel === "lineStyle" || selection && panel === "selection" || !selection && panel === "library") &&
           <LineControls key={selection?.key || pen.id} target={target} kit={kit} zh={zh} />}
-        {!selection && panel === "library" && pen?.type === "freedraw" && !pen.engine && <div className="brush-property brush-dynamics">
-          <label>{t("笔刷动态", "Brush dynamics")}<select value={pen.dynamics} onChange={event => kit.set("dynamics", event.target.value)}>
-            {brushDynamics.map(([id, cn, en]) => <option value={id} key={id}>{t(cn, en)}</option>)}
-          </select></label>
-        </div>}
         {panel === "library" && <>
           <section><h3>{t("基础笔刷", "Basic brushes")}</h3>{cards(basics)}</section>
           <section><h3>{t("工具", "Tools")}</h3>{cards(tools)}</section>
-          <section><h3>{t("我的笔刷", "My brushes")}</h3>{cards(settings.custom)}
+          <section><h3>{t("我的笔刷", "My brushes")}</h3>{cards(settings.custom)}</section>
+        </>}
+        {(panel === "library" || brushDetail) && <section>
             <div className="brush-library-actions">
               <button type="button" disabled={pen?.type !== "freedraw"} onClick={kit.add}>{t("＋ 保存当前笔刷", "＋ Save current brush")}</button>
               <button type="button" onClick={() => presetInput.current.click()}>{t("导入笔刷", "Import brush")}</button>
@@ -717,8 +815,8 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
               <button type="button" disabled={!pen} onClick={kit.reset}>{t("重置参数", "Reset settings")}</button>
             </div>
             {error && <small role="alert">{error}</small>}
-          </section></>}
-        {pen?.engine === "stamp" && panel === "library" && <section className="brush-library-actions">
+          </section>}
+        {pen?.engine === "stamp" && (panel === "library" || brushDetail && detailTab === "tip") && <section className="brush-library-actions">
           <button type="button" onClick={() => textureInput.current.click()}>{t("导入印章纹理", "Import stamp texture")}</button>
           {pen.texture && <button type="button" onClick={() => kit.set("texture", null)}>{t("恢复默认纹理", "Reset texture")}</button>}
           <input ref={textureInput} type="file" hidden accept="image/png,image/webp,image/jpeg" onChange={async event => {
@@ -726,11 +824,11 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
             event.target.value = "";
             if (!file) return;
             setError("");
-            try { kit.set("texture", await importStamp(file)); }
+            try { await kit.setMany({ texture: await importStamp(file) }, { id: pen.id, slot: kit.activeSlot }); }
             catch { setError(t("无法读取印章纹理。", "Unable to read stamp texture.")); }
           }} />
         </section>}
-        {panel !== "lineStyle" && !(selection && panel === "library") && (metrics[panel] ? [panel] : Object.keys(metrics)).filter(hasProperty).map(control)}
+        {!brushDetail && panel !== "lineStyle" && !(selection && panel === "library") && (metrics[panel] ? [panel] : Object.keys(metrics)).filter(hasProperty).map(control)}
         {kit.nudge && ["library", "nudge"].includes(panel) && <div className="brush-property brush-nudge-settings">
           <label>{t("微调范围", "Nudge radius")}<input type="range" min="8" max="160" value={settings.nudgeRadius}
             onChange={event => kit.setNudgeRadius(event.target.valueAsNumber)} /><output>{settings.nudgeRadius} px</output></label>
@@ -738,10 +836,8 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
         {hasFontSize && panel === "selection" && <div className="brush-property brush-fill">
           <span>{t("字号", "Font size")}</span><button type="button" onClick={() => kit.setPanel("dimensions")}>{selection.fontSize == null ? t("混合", "Mixed") : `${selection.fontSize} px`}</button>
         </div>}
-        {selection && panel === "selection" && Object.hasOwn(selection, "fill") && <div className="brush-property brush-fill">
-          <label>{t("填充颜色", "Fill color")}<input type="color" key={selection.fill} defaultValue={hexColor(selection.fill) || "#ffffff"}
-            ref={input => { if (input) input.onchange = () => kit.set("fill", input.value); }} /></label>
-          <button type="button" onClick={() => kit.set("fill", "transparent")}>{t("清除填充", "Clear fill")}</button>
+        {selection && panel === "selection" && hasFill && <div className="brush-property brush-fill">
+          <button type="button" onClick={() => kit.setPanel("fillFan")}>{t("填充颜色与不透明度", "Fill color and opacity")}</button>
         </div>}
         {panel === "library" && <><details className="brush-shortcuts"><summary>{t("快捷键", "Shortcuts")}</summary>
           <small>{t("工具按键可在主菜单的「快捷键设置」中修改。", "Change tool bindings in Keyboard shortcuts in the main menu.")}</small>
@@ -755,7 +851,7 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
     {sampleRequest && <CanvasSampler api={kit.apiRef.current} request={sampleRequest} samplingBackground={kit.samplingBackground}
       finish={async value => {
         setSampleRequest(null);
-        if (value && await kit.setMany(value, sampleRequest)) colors.remember(value.color);
+        if (value && await kit.setMany(sampleRequest.fill ? fillValues(value.color, value.opacity) : value, sampleRequest)) colors.remember(value.color);
       }} />}
   </div>;
 }, (a, b) => a.zh === b.zh && a.kit.settings === b.kit.settings && a.kit.panel === b.kit.panel &&

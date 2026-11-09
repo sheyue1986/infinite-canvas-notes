@@ -26,6 +26,24 @@
 }
 .color-fan-buttons button { position: absolute; transform: translate(-50%, -50%); }
 .color-fan-buttons button:is(:hover, [aria-pressed="true"]) { background: #e7e9e6; }
+.color-fan-fill-opacity {
+  position: absolute; top: 246px; left: 8px; pointer-events: auto;
+}
+.color-fan-fill-opacity > button, .fill-opacity-controls button {
+  border: 0; border-radius: 4px; background: #fafbf9; color: #222624;
+  padding: 4px 5px; font: 650 11px/1.2 system-ui, sans-serif; box-shadow: 0 1px 4px #1c242015;
+}
+.color-fan-fill-opacity > button[aria-expanded="true"] { background: #eee9f5; color: #593e84; }
+.fill-opacity-controls {
+  display: grid; justify-items: start; gap: 6px; padding: 8px 10px; background: #fbfcfb; color: #222624;
+}
+.color-fan-fill-opacity .fill-opacity-controls {
+  position: absolute; top: calc(100% + 4px); left: 0; width: 166px;
+  border: 1px solid #dce1dc; border-radius: 6px; box-shadow: 0 4px 12px #18241a26;
+}
+.fill-opacity-controls label { display: grid; width: 100%; grid-template-columns: 1fr auto; gap: 4px; }
+.fill-opacity-controls input { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: #7957ad; }
+.fill-opacity-controls button { background: #eef0ed; box-shadow: none; }
 .copic-families {
   position: absolute; top: 224px; left: 9px; display: flex; gap: 2px;
   padding: 3px; border-radius: 5px; background: #f8faf6; box-shadow: 0 1px 4px #17251b20;

@@ -148,9 +148,10 @@ function Numeric({ label, value, min = 0, max, onCommit, autoFocus }) {
     }} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); }} />;
 }
 
-export function ColorFan({ colors, color, choose: applyColor, openPalettes, sample, close }) {
+export function ColorFan({ colors, color, choose: applyColor, openPalettes, sample, close, fillControls }) {
   const { state, set } = colors;
-  const mode = state.mode;
+  const [fillMode, setFillMode] = useState("spectrum");
+  const mode = fillControls ? fillMode : state.mode;
   const [offset, setOffset] = useState(() => offsetForColor(color));
   const previousColor = useRef(color);
   const internalColor = useRef(null);
@@ -185,7 +186,8 @@ export function ColorFan({ colors, color, choose: applyColor, openPalettes, samp
     setDraft(null);
     setValueEdit(null);
     if (next === "spectrum") setOffset(offsetForColor(color));
-    set(old => ({ ...old, mode: next }));
+    if (fillControls) setFillMode(next);
+    else set(old => ({ ...old, mode: next }));
   };
   const stepWheel = step => setOffset(old => old + step);
   const stage = (index, next) => {
@@ -235,7 +237,7 @@ export function ColorFan({ colors, color, choose: applyColor, openPalettes, samp
     return <button type="button" style={{ left: `${x / 5}%`, top: `${y / 5}%` }} aria-pressed={active}
       title={title || label} aria-label={title || label} onClick={run}>{label}</button>;
   };
-  return <div className="studio-color-fan" aria-label="画布色轮">
+  return <div className="studio-color-fan" aria-label={fillControls ? "填充色轮" : "画布色轮"}>
     <svg viewBox="0 0 500 500" className="studio-color-wheel" aria-label={mode === "spectrum" ? "COPIC 色轮" : mode.toUpperCase() + " 色轮"}>
       {mode === "spectrum" ? <g className="copic-paints"
         onWheel={event => { stepWheel(event.deltaY > 0 ? 1 : -1); }}
@@ -327,6 +329,7 @@ export function ColorFan({ colors, color, choose: applyColor, openPalettes, samp
           }} />;
       })}
     </div>}
+    {fillControls}
   </div>;
 }
 
