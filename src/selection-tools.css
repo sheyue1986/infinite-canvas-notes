@@ -1,0 +1,60 @@
+/* Concepts-inspired selection controls */
+.app-shell {
+  --icn-ink: #27233d;
+  --icn-muted: #59546d;
+  --icn-accent: #653cc7;
+  --icn-active: #ede5ff;
+  --icn-paper: rgba(255, 255, 255, .97);
+  --icn-line: #e6deef;
+  --icn-dim: rgba(242, 239, 247, .56);
+}
+.app-shell:has(.excalidraw.theme--dark) {
+  --icn-ink: #f3eaff; --icn-muted: #c3b5d5; --icn-accent: #c6a6ff; --icn-active: #493568;
+  --icn-paper: rgba(36, 28, 49, .97); --icn-line: #514064; --icn-dim: rgba(28, 21, 39, .58);
+}
+.icn-pills {
+  display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--icn-line);
+  border-radius: 999px; background: var(--icn-paper); color: var(--icn-ink);
+  box-shadow: 0 5px 18px rgb(43 27 69 / 13%);
+}
+.icn-pills button, .icn-pills select {
+  min-width: 33px; height: 33px; border: 0; border-radius: 999px; padding: 0 9px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  color: inherit; background: transparent; font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.icn-pills button:hover, .icn-pills select:hover { background: var(--icn-active); }
+.icn-pills button.is-on { color: var(--icn-accent); background: var(--icn-active); }
+.icn-pills button:disabled { opacity: .36; cursor: default; }
+.icn-pills button:disabled:hover { background: transparent; }
+.icn-pills button:focus-visible { outline: 2px solid var(--icn-accent); outline-offset: 1px; }
+.icn-selection-dock, .icn-mode-hint {
+  position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 22;
+  width: max-content; max-width: calc(100vw - 32px); text-align: center; color: var(--icn-ink);
+}
+.icn-selection-dock .icn-pills { flex-wrap: wrap; justify-content: center; border-radius: 24px; }
+.icn-selection-dock small, .icn-mode-hint {
+  display: inline-block; margin: 4px 0 0; background: var(--icn-paper); border-radius: 12px;
+  padding: 4px 10px; font-size: 11px; line-height: 1.35; color: var(--icn-muted); pointer-events: none;
+}
+.icn-selection-popup { position: fixed; z-index: 23; transform: translateX(-50%); display: grid; gap: 5px; justify-items: center; }
+.icn-selection-popup .icn-pills button { padding: 0 7px; }
+.icn-measures { display: flex; gap: 5px; }
+.icn-measure {
+  display: flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid var(--icn-line);
+  background: var(--icn-paper); color: var(--icn-muted); border-radius: 999px; font-size: 11px;
+}
+.icn-measure input { width: 53px; color: var(--icn-ink); font: inherit; border: 0; background: transparent; appearance: textfield; }
+.icn-measure input::-webkit-inner-spin-button { appearance: none; }
+.icn-selection-ink { position: fixed; z-index: 3; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.icn-lasso-line { stroke: var(--icn-accent); stroke-width: 1.6; stroke-dasharray: 5 3; fill: #8d5cf629; stroke-linejoin: round; }
+.icn-picker-mark { stroke: var(--icn-accent); stroke-width: 2; fill: none; paint-order: stroke; filter: drop-shadow(0 0 1px white); }
+.icn-color-sample { width: 16px; height: 16px; border: 1px solid var(--icn-line); border-radius: 50%; margin-right: 5px; }
+.icn-transform-handle {
+  position: fixed; z-index: 21; transform: translate(-50%, -50%); width: 13px; height: 13px; padding: 0;
+  border: 2px solid var(--icn-accent); border-radius: 50%; background: var(--icn-paper); touch-action: none;
+}
+.icn-handle-nw, .icn-handle-se { cursor: nwse-resize; }
+.icn-handle-ne, .icn-handle-sw { cursor: nesw-resize; }
+.icn-handle-rotate { width: 17px; height: 17px; cursor: grab; background: var(--icn-accent); border: 2px solid var(--icn-paper); }
+.icn-canvas-zoom canvas { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='27' height='27' viewBox='0 0 27 27'%3E%3Cpath d='M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14m5 12 8 8M6 10h8m-4-4v8' fill='none' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14m5 12 8 8M6 10h8m-4-4v8' fill='none' stroke='%23332654' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") 10 10, zoom-in !important; }
+.icn-canvas-selection canvas { cursor: crosshair !important; }

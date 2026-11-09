@@ -2,8 +2,14 @@ import React, { useEffect, useRef, useState } from "react";
 import { exportToCanvas } from "@excalidraw/excalidraw";
 import { createProject, deleteProject, list, materialData, read, write } from "./storage.js";
 
+import { modelProjectData, unpackModelProject } from "./model-views.js";
+
 export function downloadJSON(value, name) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(value)], { type: "application/json" }));
+  downloadBlob(new Blob([JSON.stringify(value)], { type: "application/json" }), name);
+}
+
+export function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = name;
@@ -107,7 +113,11 @@ export function Gallery({ Editor, readLegacy }) {
       await refresh();
     });
   }, []);
-  const open = project => run(async () => setOpened({ ...project, scene: await read("scenes", project.id) }));
+  const open = project => run(async () => {
+    const view = project.modelViews?.find(item => item.id === project.activeModelView);
+    const sketch = view && await read("scenes", [project.id, view.id]);
+    setOpened({ ...project, activeModelView: sketch ? view.id : null, scene: sketch || await read("scenes", project.id) });
+  });
   const importProject = async event => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -118,7 +128,8 @@ export function Gallery({ Editor, readLegacy }) {
       if (!Array.isArray(scene?.elements) || ![undefined, "excalidraw", "infinite-canvas-project"].includes(data.type)) {
         throw new Error("请选择项目备份或 .excalidraw 文件。");
       }
-      const project = await createProject(data.name || file.name.replace(/\.[^.]+$/, ""), scene);
+      const model = data.type === "infinite-canvas-project" ? await unpackModelProject(data.model) : {};
+      const project = await createProject(data.name || file.name.replace(/\.[^.]+$/, ""), scene, undefined, undefined, model);
       await open(project);
     });
   };
@@ -148,7 +159,7 @@ export function Gallery({ Editor, readLegacy }) {
           if (name && name !== project.name) { await write("projects", project.id, { ...project, name }); await refresh(); }
         })}>重命名</button>
         <button onClick={() => run(async () => {
-          await createProject(project.name + " 副本", await read("scenes", project.id), await read("covers", project.id));
+          await createProject(project.name + " 副本", await read("scenes", project.id), await read("covers", project.id), undefined, await modelProjectData(project));
           await refresh();
         })}>复制</button>
         <button onClick={() => run(async () => {

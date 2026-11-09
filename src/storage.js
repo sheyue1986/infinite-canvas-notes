@@ -1,14 +1,20 @@
 let connection;
 export function database() {
   return connection ??= new Promise((resolve, reject) => {
-    const request = indexedDB.open("infinite-canvas-workspace", 1);
+    const request = indexedDB.open("infinite-canvas-workspace", 2);
     request.onupgradeneeded = () => {
-      for (const name of ["index", "content", "thumbs", "settings", "projects", "scenes", "covers"]) {
-        request.result.createObjectStore(name);
+      for (const name of ["index", "content", "thumbs", "settings", "projects", "scenes", "covers", "modelAssets"]) {
+        if (!request.result.objectStoreNames.contains(name)) request.result.createObjectStore(name);
       }
     };
     request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      request.result.onversionchange = () => {
+        request.result.close();
+        connection = undefined;
+      };
+      resolve(request.result);
+    };
   }).catch(error => {
     connection = undefined;
     throw error;
@@ -132,29 +138,117 @@ export async function exportTree(folder) {
   return { ...folder, folders, objects };
 }
 
-export async function saveProjectScene(id, scene) {
-  await transact(["projects", "scenes"], "readwrite", get => {
+export const modelSceneKey = (id, viewId) => viewId ? [id, viewId] : id;
+
+export function saveProjectScene(id, scene, viewId) {
+  return transact(["projects", "scenes"], "readwrite", get => {
     const projects = get("projects");
     const request = projects.get(id);
     request.onsuccess = () => {
-      if (!request.result) return;
-      projects.put({ ...request.result, updated: Date.now() }, id);
-      get("scenes").put(scene, id);
+      const project = request.result;
+      if (!project || (viewId && !project.modelViews?.some(view => view.id === viewId))) return;
+      projects.put({ ...project, updated: Date.now() }, id);
+      get("scenes").put(scene, modelSceneKey(id, viewId));
     };
   });
 }
 
-export function createProject(name, scene, cover, id = crypto.randomUUID()) {
-  const project = { id, name, updated: Date.now() };
-  return transact(["projects", "scenes", "covers"], "readwrite", get => {
+export function saveModelView(id, view, scene, asset) {
+  return transact(["projects", "scenes", "modelAssets"], "readwrite", get => {
+    const projects = get("projects");
+    const request = projects.get(id);
+    request.onsuccess = () => {
+      const project = request.result;
+      if (!project) {
+        projects.transaction.abort();
+        return;
+      }
+      if (asset) get("modelAssets").add(asset.files, [id, asset.id]);
+      get("scenes").add(scene, [id, view.id]);
+      projects.put({ ...project, modelViews: [...(project.modelViews || []), view], activeModelView: view.id, updated: Date.now() }, id);
+    };
+  });
+}
+
+export function editModelViews(id, viewId, edit) {
+  return transact(["projects"], "readwrite", get => {
+    const store = get("projects");
+    const request = store.get(id);
+    request.onsuccess = () => {
+      const project = request.result;
+      const index = project?.modelViews?.findIndex(view => view.id === viewId) ?? -1;
+      if (index === -1) {
+        store.transaction.abort();
+        return;
+      }
+      const views = [...project.modelViews];
+      if (edit.move) {
+        const target = index + edit.move;
+        if (target >= 0 && target < views.length) [views[index], views[target]] = [views[target], views[index]];
+      } else {
+        views[index] = { ...views[index], ...edit };
+      }
+      store.put({ ...project, modelViews: views, updated: Date.now() }, id);
+    };
+  }).then(async () => (await read("projects", id)).modelViews);
+}
+
+export function selectProjectView(id, viewId) {
+  return transact(["projects"], "readwrite", get => {
+    const store = get("projects");
+    const request = store.get(id);
+    request.onsuccess = () => {
+      const project = request.result;
+      if (!project || (viewId && !project.modelViews?.some(view => view.id === viewId))) {
+        store.transaction.abort();
+        return;
+      }
+      store.put({ ...project, activeModelView: viewId }, id);
+    };
+  });
+}
+
+export function createProject(name, scene, cover, id = crypto.randomUUID(), model = {}) {
+  const views = model.views || [];
+  const project = { id, name, updated: Date.now(), ...(views.length && {
+    modelViews: views.map(({ scene: _scene, ...view }) => view),
+  }) };
+  return transact(["projects", "scenes", "covers", "modelAssets"], "readwrite", get => {
     get("projects").add(project, id);
     if (scene) get("scenes").put(scene, id);
     if (cover) get("covers").put(cover, id);
+    for (const { id: viewId, scene: viewScene } of views) get("scenes").add(viewScene, [id, viewId]);
+    for (const asset of model.assets || []) get("modelAssets").add(asset.files, [id, asset.id]);
   }).then(() => project);
 }
 
 export function deleteProject(id) {
-  return transact(["projects", "scenes", "covers"], "readwrite", get => {
+  const children = IDBKeyRange.bound([id], [id, []]);
+  return transact(["projects", "scenes", "covers", "modelAssets"], "readwrite", get => {
     for (const name of ["projects", "scenes", "covers"]) get(name).delete(id);
+    get("scenes").delete(children);
+    get("modelAssets").delete(children);
   });
+}
+export function removeViewContent(id, viewId, sketch) {
+  let result;
+  return transact(["projects", "scenes", "modelAssets"], "readwrite", get => {
+    const projects = get("projects");
+    const request = projects.get(id);
+    request.onsuccess = () => {
+      const project = request.result;
+      const view = project?.modelViews?.find(item => item.id === viewId);
+      if (!view) { projects.transaction.abort(); return; }
+      const views = sketch
+        ? project.modelViews.map(item => item.id === viewId
+          ? { ...item, assetId: null, underlayId: null, thumbnail: null, guide: null, guideVisible: false, guideSnap: false } : item)
+        : project.modelViews.filter(item => item.id !== viewId);
+      if (sketch) get("scenes").put(sketch, [id, viewId]);
+      else get("scenes").delete([id, viewId]);
+      if (view.assetId && !views.some(item => item.assetId === view.assetId)) get("modelAssets").delete([id, view.assetId]);
+      const activeModelView = !sketch && project.activeModelView === viewId ? null : project.activeModelView;
+      projects.put({ ...project, modelViews: views, activeModelView, updated: Date.now() }, id);
+      result = views;
+    };
+  }).then(() => result);
 }

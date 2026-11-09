@@ -3,17 +3,28 @@ import { createRoot } from "react-dom/client";
 import { Excalidraw, CaptureUpdateAction, MainMenu, convertToExcalidrawElements, mutateElement, serializeAsJSON } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import "./style.css";
-import { emptyLibrary, exportTree, loadLibrary, materialData, packLibrary, packMaterial, saveLibrary, saveProjectScene, write } from "./storage.js";
-import { Gallery, coverFor, downloadJSON } from "./workspace.jsx";
+import "./model-workspace.css";
+import { editModelViews, emptyLibrary, exportTree, loadLibrary, materialData, packLibrary, packMaterial, saveLibrary, modelSceneKey, read, removeViewContent, saveModelView, saveProjectScene, selectProjectView, write } from "./storage.js";
+import { Gallery, coverFor, downloadBlob, downloadJSON } from "./workspace.jsx";
 import { LibraryIcon, MaterialPanel, materialDragType } from "./material-panel.jsx";
-import { LayerPanel, layerSafeElements, useLayers } from "./layers.jsx";
+import { LayerPanel, layerOf, layerSafeElements, useLayers } from "./layers.jsx";
 import { CalibrationDialog, PrecisionPanel, PrecisionGridRow, PrecisionOverlay } from "./precision.jsx";
 import { defaults as precisionDefaults, measureAt, measured, preciseStroke } from "./precision-engine.js";
 import { BrushKit, finalizeBrush, hasLineStyle, isDefaultToolKey, useBrushKit } from "./brush-kit.jsx";
 import { ShortcutSettings, shortcutFromEvent } from "./tool-shortcuts.jsx";
+import ModelGuideOverlay from "./ModelGuideOverlay.jsx";
+import ModelViewManager from "./ModelViewManager.jsx";
+import { drawingGuide, snapPerspective } from "./model-study.js";
+import { exportViewPng, makeModelScene, packModelProject } from "./model-views.js";
+import { useCanvasTools } from "./CanvasTools.jsx";
+import { installCommandBridge } from "./canvasCommands.js";
+import { makePrecisionCommands } from "./precision-shortcuts.js";
 import { fillAt } from "./bucket-fill.js";
 import { createNudge } from "./nudge.js";
 import { makePaintEngine, sceneImageFileIds } from "./paint-engine.js";
+
+const ModelWorkspace = React.lazy(() => import("./ModelWorkspace.jsx"));
+const isModelFile = file => /\.(glb|gltf|obj|3dm|blend|skp)$/i.test(file.name);
 
 const STORAGE_KEY = "infinite-canvas-notes-library-v2";
 const LIBRARY_DB_NAME = "infinite-canvas-notes";
@@ -289,7 +300,26 @@ async function imageToCanvas(file) {
   return canvas;
 }
 
-function App({ project, onExit }) {
+function ProjectEditor({ project, onExit }) {
+  const [opened, setOpened] = useState(() => ({
+    scene: project.scene, viewId: project.activeModelView, views: project.modelViews || [],
+  }));
+  const [collapsed, setCollapsed] = useState(false);
+  const navigate = (viewId, scene, added, replacement) => setOpened(current => ({
+    viewId, scene, revision: (current.revision || 0) + 1, views: replacement || (added ? [...current.views, added] : current.views),
+  }));
+  const view = opened.views.find(item => item.id === opened.viewId);
+  return <App key={(view?.id || "base") + ":" + (opened.revision || 0)} project={{ ...project, scene: opened.scene, modelViews: opened.views }}
+    onExit={onExit} modelView={view} navigate={navigate} viewsCollapsed={collapsed}
+    replaceViews={views => setOpened(current => ({ ...current, views }))}
+    toggleViews={() => setCollapsed(value => !value)} />;
+}
+
+function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapsed, toggleViews }) {
+  const [modelRequest, setModelRequest] = useState(null);
+  const viewAction = useRef(false);
+  const [manageViews, setManageViews] = useState(false);
+  const [viewBusy, setViewBusy] = useState(false);
   const apiRef = useRef(null);
   const brushName = useRef("钢笔");
   const layers = useLayers(project, apiRef, brushName);
@@ -346,7 +376,13 @@ function App({ project, onExit }) {
   const nudgePreview = useRef(null);
   const nudge = useMemo(() => createNudge(apiRef, nudgeCursor, nudgePreview), []);
   useEffect(() => () => nudge.cancel(), [nudge, nudgeEnabled]);
+  const syncCanvasTool = useRef(null);
   const brushKit = useBrushKit(apiRef, layerState, kind => {
+    syncCanvasTool.current?.(kind);
+    if (kind === "zoom" || kind === "lasso") {
+      paintEngine.current?.cancel(); nudge.cancel(); measureRef.current = null; setMeasureStatus("");
+      setPrecisionEditing(null); setRelationshipSourceId(null);
+    }
     setPartialEraser(kind === "partial");
     setMagicWand(kind === "wand");
     setNudgeEnabled(kind === "nudge");
@@ -437,7 +473,7 @@ function App({ project, onExit }) {
         if (saved?.elements && active) {
           const migrated = migrateNativeElementLinks(saved.elements, saved.relationships || {});
           const cleanElements = withoutNativeLinks(saved.elements);
-          setCanvasInitialData({ ...saved, elements: cleanElements, relationships: migrated.relationships });
+          setCanvasInitialData({ ...saved, elements: cleanElements, relationships: migrated.relationships, scrollToContent: !!modelView || saved.scrollToContent });
           setBackgroundColor(saved.appState?.viewBackgroundColor || "#f2f2f7");
           setRelationships(migrated.relationships);
           setRelationshipCollections(saved.relationshipCollections || {});
@@ -774,7 +810,10 @@ function App({ project, onExit }) {
     return { x: (event.clientX - state.offsetLeft) / state.zoom.value - state.scrollX, y: (event.clientY - state.offsetTop) / state.zoom.value - state.scrollY };
   }, []);
 
-  const drawPreciseLine = useCallback((start, end) => {
+  const constrainGuide = useCallback((start, end) => modelView?.guideSnap
+    ? snapPerspective(start, end, drawingGuide(modelView, apiRef.current)) : end, [modelView]);
+
+  const drawPreciseLine = useCallback((start, end, capture = false) => {
     const api = apiRef.current;
     if (!api || Math.hypot(end.x - start.x, end.y - start.y) < 1) return;
     const appState = api.getAppState();
@@ -793,7 +832,7 @@ function App({ project, onExit }) {
     }], { regenerateIds: true });
     const profile = brushKitRef.current.mode.current;
     if (profile.strokeStyle === "dashed") mutateElement(line, { strokeStyle: "dashed", customData: { infiniteDashDensity: profile.dashDensity } }, false);
-    api.updateScene({ elements: [...api.getSceneElements(), line] });
+    api.updateScene({ elements: [...api.getSceneElements(), line], ...(capture && { captureUpdate: CaptureUpdateAction.IMMEDIATELY }) });
   }, []);
 
   const removeAnchorDot = useCallback(() => {
@@ -983,14 +1022,14 @@ function App({ project, onExit }) {
     pendingCanvasPayloadRef.current = null;
     canvasWriteQueueRef.current = canvasWriteQueueRef.current
       .catch(() => undefined)
-      .then(() => saveProjectScene(project.id, payload))
+      .then(() => saveProjectScene(project.id, payload, modelView?.id))
       .catch(error => {
         pendingCanvasPayloadRef.current ??= payload;
         setSaveError("画布未保存，请重试或导出项目备份。");
         throw error;
       });
     return canvasWriteQueueRef.current;
-  }, [project.id]);
+  }, [project.id, modelView?.id]);
 
   const saveCanvas = useCallback((elements, appState, files) => {
     const referenced = sceneImageFileIds(elements);
@@ -1252,8 +1291,9 @@ function App({ project, onExit }) {
       const anchor = straightLineAnchorRef.current;
       if (anchor) {
         removeAnchorDot();
-        drawPreciseLine(anchor.point, point);
-        straightLineAnchorRef.current = { point, elementId: null };
+        const end = constrainGuide(anchor.point, point);
+        drawPreciseLine(anchor.point, end, modelView?.guideSnap);
+        straightLineAnchorRef.current = { point: end, elementId: null };
         return true;
       }
       straightLineAnchorRef.current = { point, elementId: null };
@@ -1266,7 +1306,7 @@ function App({ project, onExit }) {
       elementIds: new Set(api.getSceneElements().map((element) => element.id)),
     };
     return false;
-  }, [drawPreciseLine, eraseSelectedImageArea, partialEraser, removeAnchorDot, scenePoint]);
+  }, [constrainGuide, drawPreciseLine, eraseSelectedImageArea, modelView?.guideSnap, partialEraser, removeAnchorDot, scenePoint]);
 
   const handleCanvasPointerMove = useCallback((event) => {
     if (partialStraightPromiseRef.current) {
@@ -1274,11 +1314,16 @@ function App({ project, onExit }) {
       return true;
     }
     const session = straightLineSessionRef.current;
-    if (!session) return false;
+    const api = apiRef.current;
+    if (!session || !api || session.id !== event.pointerId) return false;
     event.preventDefault(); event.stopPropagation();
-    setStraightLinePreview({ x1: session.clientX, y1: session.clientY, x2: event.clientX, y2: event.clientY });
+    const end = constrainGuide(session.point, scenePoint(event, api));
+    const state = api.getAppState();
+    setStraightLinePreview({ x1: session.clientX, y1: session.clientY,
+      x2: (end.x + state.scrollX) * state.zoom.value + state.offsetLeft,
+      y2: (end.y + state.scrollY) * state.zoom.value + state.offsetTop });
     return true;
-  }, []);
+  }, [constrainGuide, scenePoint]);
 
   const handleCanvasPointerUp = useCallback((event) => {
     const api = apiRef.current;
@@ -1291,9 +1336,9 @@ function App({ project, onExit }) {
       return true;
     }
     const session = straightLineSessionRef.current;
-    if (session && api) {
+    if (session && api && session.id === event.pointerId) {
       event.preventDefault(); event.stopPropagation();
-      drawPreciseLine(session.point, scenePoint(event, api));
+      drawPreciseLine(session.point, constrainGuide(session.point, scenePoint(event, api)), true);
       straightLineSessionRef.current = null;
       setStraightLinePreview(null);
       return true;
@@ -1309,7 +1354,7 @@ function App({ project, onExit }) {
       if (dot) straightLineAnchorRef.current = { point: pointer.point, elementId: dot.id };
     }, 0);
     return false;
-  }, [drawPreciseLine, eraseSelectedImageArea, scenePoint]);
+  }, [constrainGuide, drawPreciseLine, eraseSelectedImageArea, scenePoint]);
 
   const changePrecision = next => {
     const previous = precisionRef.current;
@@ -1470,10 +1515,205 @@ function App({ project, onExit }) {
     },
   };
 
+  const flushView = async () => {
+    await paintEngine.current?.idle();
+    await flushCanvasSave();
+  };
+  const switchModelView = async viewId => {
+    if ((modelView?.id || null) === viewId || viewAction.current) return;
+    viewAction.current = true;
+    try {
+      await flushView();
+      const scene = await read("scenes", modelSceneKey(project.id, viewId));
+      if (viewId && !scene) throw new Error("Missing view");
+      await selectProjectView(project.id, viewId);
+      navigate(viewId, scene);
+    } catch {
+      setSaveError(zh ? "无法切换视角，请重试。" : "Could not switch views.");
+    } finally {
+      viewAction.current = false;
+    }
+  };
+  const openModelForView = async view => {
+    if (!view?.assetId || viewAction.current) return;
+    viewAction.current = true;
+    try {
+      const files = await read("modelAssets", [project.id, view.assetId]);
+      if (!files?.length) throw new Error("Missing model");
+      setModelRequest({ files, view });
+    } catch {
+      setSaveError(zh ? "无法读取此视角的模型。" : "Could not read this view’s model.");
+    } finally {
+      viewAction.current = false;
+    }
+  };
+  const addModelView = async ({ name, white, shadows, study, camera, capture, assetId, files }) => {
+    const view = { id: crypto.randomUUID(), underlayId: crypto.randomUUID(), name, white, shadows, study, camera, guide: capture.guide, guideVisible: camera.twoPoint, guideSnap: false,
+      assetId: assetId || crypto.randomUUID(), thumbnail: capture.thumbnail };
+    const scene = makeModelScene(view, capture, zh);
+    await flushView();
+    await saveModelView(project.id, view, scene, assetId ? null : { id: view.assetId, files });
+    navigate(view.id, scene, view);
+  };
+  const editView = async (id, edit) => {
+    if (viewAction.current) return false;
+    viewAction.current = true;
+    setViewBusy(true);
+    try {
+      replaceViews(await editModelViews(project.id, id, edit));
+      return true;
+    } catch {
+      setSaveError(zh ? "无法修改视角，请重试。" : "Could not edit the view.");
+      return false;
+    } finally {
+      viewAction.current = false;
+      setViewBusy(false);
+    }
+  };
+  const duplicateView = async view => {
+    if (viewAction.current) return;
+    viewAction.current = true;
+    setViewBusy(true);
+    try {
+      await flushView();
+      const scene = await read("scenes", [project.id, view.id]);
+      if (!scene) throw new Error("Missing view");
+      const copy = { ...view, id: crypto.randomUUID(), name: view.name.slice(0, 73) + (zh ? " 副本" : " copy") };
+      await saveModelView(project.id, copy, scene);
+      navigate(copy.id, scene, copy);
+    } catch {
+      setSaveError(zh ? "无法复制视角，请重试。" : "Could not duplicate the view.");
+    } finally {
+      viewAction.current = false;
+      setViewBusy(false);
+    }
+  };
+  const removeView = async (view, layerId) => {
+    if (viewAction.current || !window.confirm(layerId
+      ? (zh ? "删除此视角的三维底图与模型关联，并保留其他图层？" : "Remove this view’s model and underlay, keeping the other layers?")
+      : (zh ? `删除“${view.name}”及其草图？` : `Delete “${view.name}” and its sketch?`))) return;
+    viewAction.current = true;
+    setViewBusy(true);
+    try {
+      await flushView();
+      if (layerId) {
+        const scene = projectScene();
+        scene.elements = scene.elements.filter(element => element.id !== view.underlayId && layerOf(element) !== layerId);
+        const used = sceneImageFileIds(scene.elements);
+        scene.files = Object.fromEntries(Object.entries(scene.files).filter(([id]) => used.has(id)));
+        scene.layers.items = scene.layers.items.filter(layer => layer.id !== layerId);
+        if (scene.layers.active === layerId) scene.layers.active = scene.layers.items.find(layer => !layer.archived && !layer.locked)?.id || "layer-base";
+        const views = await removeViewContent(project.id, view.id, scene);
+        navigate(view.id, scene, null, views);
+      } else {
+        const base = modelView?.id === view.id ? await read("scenes", project.id) : null;
+        const views = await removeViewContent(project.id, view.id);
+        if (modelView?.id === view.id) navigate(null, base, null, views);
+        else replaceViews(views);
+      }
+    } catch {
+      setSaveError(zh ? "删除失败，请重试。" : "Could not delete. Try again.");
+    } finally {
+      viewAction.current = false;
+      setViewBusy(false);
+    }
+  };
+  const exportProject = async () => {
+    try {
+      await flushView();
+      const scene = (modelView ? await read("scenes", project.id) : projectScene()) || { elements: [], files: {} };
+      const model = project.modelViews.length ? await packModelProject(project) : undefined;
+      downloadJSON({ type: "infinite-canvas-project", version: model ? 2 : 1, name: project.name, scene, model },
+        project.name + ".canvas.json");
+    } catch {
+      setSaveError(zh ? "项目备份导出失败。" : "Could not export the project backup.");
+    }
+  };
+  const exportSketch = async transparent => {
+    try {
+      await flushView();
+      const file = await exportViewPng(projectScene(), modelView, transparent);
+      downloadBlob(file, modelView.name + (transparent ? " - sketch.png" : ".png"));
+    } catch {
+      setSaveError(zh ? "草图导出失败。" : "Could not export the sketch.");
+    }
+  };
+  const exportScene = () => {
+    const { elements, appState, files } = projectScene();
+    const exported = JSON.parse(serializeAsJSON(layerSafeElements(elements), appState, files, "local"));
+    downloadJSON({ ...exported, files: { ...files, ...exported.files } }, project.name + ".excalidraw");
+  };
+  const activeLayerId = () => layerState.current.focus || layerState.current.active;
+  const togglePrecisionPanel = () => {
+    if (precisionOpen && layers.open) closePrecision();
+    else { if (!layers.open) layers.toggle(); setPrecisionOpen(true); }
+  };
+  const lastCanvasContent = useRef(null);
+  const canvasTools = useCanvasTools({
+    apiRef, zh, viewport: canvasViewport, overlay: relationshipOverlayElement, ready: canvasReady,
+    settingsOpen: shortcutSettingsOpen || Boolean(modelRequest),
+    layerView: layerState, brushKitRef, nativeToolRef: activeToolRef, canActivate: () => drawingPointer.current === null,
+    enabled: !(partialEraser || magicWand || bucketEnabled || nudgeEnabled || relationshipSourceId || measureStatus || precisionEditing),
+    appCommands: {
+      ...makePrecisionCommands({
+        current: precisionRef, change: changePrecision, openGrid, openGuide, start: startMeasure, togglePanel: togglePrecisionPanel,
+        openPanel: section => { if (!layers.open) layers.toggle(); setPrecisionOpen(true); setPrecisionSection(section); },
+        edit: kind => setPrecisionEditing(value => value === kind ? null : kind),
+      }),
+      selectLayerContents: () => layers.selectAll(activeLayerId()),
+      toggleLayers: layers.toggle, addLayer: () => layers.add(), focusLayer: () => layers.focus(activeLayerId()),
+      toggleLibrary: () => setIsOpen(value => !value),
+      searchMaterials: () => { setIsOpen(true); requestAnimationFrame(() => document.querySelector(".material-panel input[type=search]")?.focus()); },
+      addMaterialFolder: addFolder, saveMaterial: saveSelection, exportMaterials: exportLibrary,
+      importMaterials: () => libraryImportRef.current?.click(), importMaterialImages: () => materialImageInput.current?.click(),
+      removeBackground: () => void removeSelectedImageBackground(),
+      setCanvasBackground: () => backgroundInputRef.current?.click(), clearCanvasBackground: () => setBackgroundImage(null),
+      startRelationship, exportProject, exportScene,
+      widthDown: () => partialEraser ? setBrushSize(value => Math.max(4, value - 4)) : nudgeEnabled ? brushKit.setNudgeRadius(brushKit.settings.nudgeRadius - 4) : brushKit.adjust("width", -.5),
+      widthUp: () => partialEraser ? setBrushSize(value => Math.min(240, value + 4)) : nudgeEnabled ? brushKit.setNudgeRadius(brushKit.settings.nudgeRadius + 4) : brushKit.adjust("width", .5),
+    },
+  });
+  syncCanvasTool.current = canvasTools.syncTool;
+
   return (
     <main lang={language} className={`app-shell wheel-only ${(partialEraser || magicWand) ? "is-pixel-tool" : ""} ${brushKit.selection && ["native", "dimensions"].includes(brushKit.panel) ? `object-${brushKit.panel}` : ""}`}>
+      {modelRequest && <React.Suspense fallback={null}>
+        <ModelWorkspace zh={zh} droppedFiles={modelRequest.files} savedView={modelRequest.view}
+          defaultName={zh ? `视角 ${project.modelViews.length + 1}` : `View ${project.modelViews.length + 1}`}
+          onSave={addModelView} onClose={() => setModelRequest(null)} />
+      </React.Suspense>}
+      {project.modelViews.length > 0 && <div className="model-view-strip" aria-label={zh ? "三维草图视角" : "3D sketch views"}>
+        <button type="button" className="model-view-toggle" aria-expanded={!viewsCollapsed} onClick={toggleViews}>
+          {viewsCollapsed ? (modelView?.name || (zh ? "视角" : "Views")) : (zh ? "视角 ▾" : "Views ▾")}
+        </button>
+        {!viewsCollapsed && <>
+          <div className="model-view-list">
+            <button type="button" aria-pressed={!modelView} onClick={() => void switchModelView(null)}>{zh ? "主画布" : "Main canvas"}</button>
+            {project.modelViews.map(view => <button type="button" key={view.id} title={view.name}
+              aria-pressed={modelView?.id === view.id} onClick={() => void switchModelView(view.id)}>
+              {typeof view.thumbnail === "string" && /^data:image\/(webp|png);base64,/.test(view.thumbnail) && <img src={view.thumbnail} alt="" />}
+              <span>{view.name}</span>
+            </button>)}
+          </div>
+          <button type="button" className="model-view-add" onClick={() => {
+            const source = modelView?.assetId ? modelView : project.modelViews.findLast(view => view.assetId);
+            if (source) void openModelForView(source);
+            else setModelRequest({ files: [] });
+          }}>
+            {zh ? "＋ 新视角" : "+ New view"}
+          </button>
+          <button type="button" aria-label={zh ? "管理视角" : "Manage views"} aria-expanded={manageViews}
+            onClick={() => setManageViews(value => !value)}>⋯</button>
+          {manageViews && <ModelViewManager views={project.modelViews} zh={zh} busy={viewBusy}
+            close={() => setManageViews(false)} edit={editView} duplicate={duplicateView} remove={removeView} />}
+        </>}
+      </div>}
+      {modelView?.guideVisible && <ModelGuideOverlay guide={drawingGuide(modelView, apiRef.current)} viewport={canvasViewport} />}
       <div
-        className="canvas-shell"
+        className={"canvas-shell" + (canvasTools.tool ? " icn-canvas-" + canvasTools.tool : "")}
+        onTouchStartCapture={canvasTools.onTouch}
+        onTouchEndCapture={canvasTools.onTouch}
+        onLostPointerCapture={event => canvasTools.onEnd(event, true)}
         data-bucket={bucketEnabled || undefined}
         style={backgroundImage ? { backgroundImage: `url(${backgroundImage})`, backgroundRepeat: "repeat", backgroundSize: `${backgroundScale}px ${backgroundScale}px` } : undefined}
         onPointerMove={(event) => {
@@ -1486,6 +1726,7 @@ function App({ project, onExit }) {
           }
         }}
         onDragOverCapture={event => {
+          if (event.dataTransfer.types.includes("Files")) event.preventDefault();
           if (materialDrag.current?.type === "object" && [...event.dataTransfer.types].includes(materialDragType)) {
             event.preventDefault();
             event.stopPropagation();
@@ -1493,6 +1734,14 @@ function App({ project, onExit }) {
           }
         }}
         onDropCapture={event => {
+          const files = [...event.dataTransfer.files];
+          if (files.some(isModelFile)) {
+            event.preventDefault();
+            event.stopPropagation();
+            setModelRequest({ files });
+            return;
+          }
+
           if (![...event.dataTransfer.types].includes(materialDragType)) return;
           event.preventDefault();
           event.stopPropagation();
@@ -1501,6 +1750,7 @@ function App({ project, onExit }) {
           if (drag?.type === "object") void placeMaterial(drag.entry.item, event.clientX, event.clientY);
         }}
         onPointerDownCapture={(event) => {
+          if (canvasTools.onDown(event)) return;
           if (event.button === 0 && event.isPrimary && event.target.closest("canvas")) drawingPointer.current = event.pointerId;
           if (event.button === 0 && event.target.closest("canvas") && apiRef.current &&
               !layers.canDraw(apiRef.current.getAppState())) {
@@ -1527,6 +1777,14 @@ function App({ project, onExit }) {
               return;
             }
             const state = apiRef.current?.getAppState();
+            if (modelView?.guideSnap && event.button === 0 && event.isPrimary && state?.activeTool.type === "line" &&
+                drawingGuide(modelView, apiRef.current)) {
+              straightLineSessionRef.current = { id: event.pointerId, point: scenePoint(event, apiRef.current), clientX: event.clientX, clientY: event.clientY };
+              event.currentTarget.setPointerCapture(event.pointerId);
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
             if (state?.activeTool.type === "freedraw" && precisionRef.current.recognize) {
               strokeHold.current = { x: event.clientX, y: event.clientY, last: performance.now(), held: 0 };
             } else strokeHold.current = null;
@@ -1551,6 +1809,7 @@ function App({ project, onExit }) {
           else if (magicWand) void magicWandAtPoint(event);
         }}
         onPointerMoveCapture={event => {
+          if (canvasTools.onMove(event)) return;
           if (nudgeEnabled) { nudge.move(event, brushKit.settings.nudgeRadius); return; }
           const draftStroke = event.buttons && strokeProfile.current?.strokeStyle === "dashed" && apiRef.current?.getAppState().newElement;
           if (draftStroke?.type === "freedraw" && draftStroke.strokeStyle !== "dashed") {
@@ -1593,8 +1852,9 @@ function App({ project, onExit }) {
           if (paintEngine.current?.move(event)) { event.preventDefault(); event.stopPropagation(); }
         }}
         onPointerLeave={() => nudge.leave()}
-        onPointerCancelCapture={event => { if (bucketPointer.current?.id === event.pointerId) bucketPointer.current = null; nudge.cancel(); liveMeasure.current = null; strokeHold.current = null; if (measureOutput.current) measureOutput.current.hidden = true; if (paintEngine.current?.end(event, true)) event.stopPropagation(); }}
+        onPointerCancelCapture={event => { if (canvasTools.onEnd(event, true)) return; if (straightLineSessionRef.current?.id === event.pointerId) { straightLineSessionRef.current = null; setStraightLinePreview(null); } if (bucketPointer.current?.id === event.pointerId) bucketPointer.current = null; nudge.cancel(); liveMeasure.current = null; strokeHold.current = null; if (measureOutput.current) measureOutput.current.hidden = true; if (paintEngine.current?.end(event, true)) event.stopPropagation(); }}
         onPointerUpCapture={(event) => {
+          if (canvasTools.onEnd(event)) return;
           const bucket = bucketPointer.current;
           if (bucketEnabled && bucket?.id === event.pointerId) {
             bucketPointer.current = null;
@@ -1619,16 +1879,32 @@ function App({ project, onExit }) {
         }}
       >
         {canvasReady && <Excalidraw
-          excalidrawAPI={(api) => { apiRef.current = api; }}
+          excalidrawAPI={(api) => { if (apiRef.current !== api) installCommandBridge(api); apiRef.current = api; }}
           onLinkOpen={handleNativeLinkOpen}
           onPointerDown={handleExcalidrawPointerDown}
           onChange={(elements, appState, files) => {
+            const nextCanvasViewport = {
+              scrollX: appState.scrollX || 0,
+              scrollY: appState.scrollY || 0,
+              zoom: appState.zoom?.value || 1,
+              offsetLeft: appState.offsetLeft || 0,
+              offsetTop: appState.offsetTop || 0,
+            };
+            setCanvasViewport((currentCanvasViewport) => JSON.stringify(currentCanvasViewport) === JSON.stringify(nextCanvasViewport)
+              ? currentCanvasViewport
+              : nextCanvasViewport);
+            const previous = lastCanvasContent.current;
+            if (canvasTools.isMagnifierZoom(appState.zoom) && previous?.elements === elements && previous.files === files
+                && previous.selection === appState.selectedElementIds && previous.tool === appState.activeTool
+                && previous.background === appState.viewBackgroundColor) return;
+            lastCanvasContent.current = { elements, files, selection: appState.selectedElementIds, tool: appState.activeTool, background: appState.viewBackgroundColor };
             layers.sync(elements, appState);
             const activeTool = appState.activeTool?.type || "selection";
             const changedTool = activeToolRef.current !== activeTool;
             const enteredFreeDraw = activeTool === "freedraw" && changedTool;
             activeToolRef.current = activeTool;
             if (changedTool) {
+              if (activeTool !== "selection") canvasTools.syncTool(null);
               brushKitRef.current.nativeChanged(activeTool);
               if (activeTool !== "selection") setNudgeEnabled(false);
             }
@@ -1668,16 +1944,6 @@ function App({ project, onExit }) {
             setRelationshipOverlayElement((currentOverlayElement) => JSON.stringify(currentOverlayElement) === JSON.stringify(nextOverlayElement)
               ? currentOverlayElement
               : nextOverlayElement);
-            const nextCanvasViewport = {
-              scrollX: appState.scrollX || 0,
-              scrollY: appState.scrollY || 0,
-              zoom: appState.zoom?.value || 1,
-              offsetLeft: appState.offsetLeft || 0,
-              offsetTop: appState.offsetTop || 0,
-            };
-            setCanvasViewport((currentCanvasViewport) => JSON.stringify(currentCanvasViewport) === JSON.stringify(nextCanvasViewport)
-              ? currentCanvasViewport
-              : nextCanvasViewport);
             if (!removingNativeLinksRef.current && ingestNativeElementLinks(elements, appState, files)) return;
             if (!skippedInitialCanvasChangeRef.current) {
               skippedInitialCanvasChangeRef.current = true;
@@ -1712,14 +1978,24 @@ function App({ project, onExit }) {
           initialData={canvasInitialData}
         >
           <MainMenu>
+            <MainMenu.Item onSelect={() => setModelRequest({ files: [] })}>{zh ? "导入三维模型" : "Import 3D model"}</MainMenu.Item>
+            {modelView && <>
+              {modelView.assetId && <MainMenu.Item onSelect={() => void openModelForView(modelView)}>{zh ? "用当前模型新建视角" : "New view from this model"}</MainMenu.Item>}
+              {modelView.guide && <>
+                <MainMenu.Item onSelect={() => void editView(modelView.id, { guideVisible: !modelView.guideVisible })}>
+                  {modelView.guideVisible ? (zh ? "隐藏透视辅助线" : "Hide perspective guides") : (zh ? "显示透视辅助线" : "Show perspective guides")}
+                </MainMenu.Item>
+                <MainMenu.Item onSelect={() => void editView(modelView.id, { guideSnap: !modelView.guideSnap })}>
+                  {modelView.guideSnap ? (zh ? "关闭透视方向吸附" : "Disable perspective snapping") : (zh ? "开启透视方向吸附" : "Enable perspective snapping")}
+                </MainMenu.Item>
+              </>}
+              <MainMenu.Item onSelect={() => void exportSketch(false)}>{zh ? "导出底图＋草图 PNG" : "Export composite PNG"}</MainMenu.Item>
+              <MainMenu.Item onSelect={() => void exportSketch(true)}>{zh ? "导出透明草图 PNG" : "Export transparent sketch PNG"}</MainMenu.Item>
+            </>}
             <MainMenu.Item onSelect={backToGallery}>返回项目画廊</MainMenu.Item>
             <MainMenu.Item onSelect={() => setLanguage(zh ? "en" : "zh-CN")}>{ui.language}</MainMenu.Item>
-            <MainMenu.Item onSelect={() => downloadJSON({ type: "infinite-canvas-project", version: 1, name: project.name, scene: projectScene() }, project.name + ".canvas.json")}>导出项目备份</MainMenu.Item>
-            <MainMenu.Item onSelect={() => {
-              const { elements, appState, files } = projectScene();
-              const exported = JSON.parse(serializeAsJSON(layerSafeElements(elements), appState, files, "local"));
-              downloadJSON({ ...exported, files: { ...files, ...exported.files } }, project.name + ".excalidraw");
-            }}>导出 Excalidraw 文件</MainMenu.Item>
+            <MainMenu.Item onSelect={exportProject}>导出项目备份</MainMenu.Item>
+            <MainMenu.Item onSelect={exportScene}>导出 Excalidraw 文件</MainMenu.Item>
             <MainMenu.DefaultItems.Export />
             <MainMenu.DefaultItems.SearchMenu />
             <MainMenu.Item onSelect={() => setShortcutSettingsOpen(true)}>{zh ? "快捷键设置" : "Keyboard shortcuts"}</MainMenu.Item>
@@ -1730,7 +2006,7 @@ function App({ project, onExit }) {
         <canvas className="brush-paint-preview" ref={paintCanvas} aria-hidden="true" />
       </div>
 
-      <LayerPanel controller={layers} hasSelection={selectedRelationshipIds.length > 0}
+      <LayerPanel controller={layers} removeModelLayer={modelView?.assetId ? id => void removeView(modelView, id) : null} hasSelection={selectedRelationshipIds.length > 0}
         onTogglePrecision={() => precisionOpen ? closePrecision() : setPrecisionOpen(true)} onClosePrecision={closePrecision}
         precisionTools={precisionOpen && <PrecisionPanel value={precision} change={changePrecision} start={startMeasure}
           section={precisionSection} setSection={setPrecisionSection} editing={precisionEditing} setEditing={setPrecisionEditing}
@@ -1743,7 +2019,8 @@ function App({ project, onExit }) {
       {calibrationLength && <CalibrationDialog length={calibrationLength} unit={precision.unit} close={() => setCalibrationLength(null)}
         apply={scale => { changePrecision({ ...precisionRef.current, scale }); setCalibrationLength(null); }} />}
       <BrushKit kit={brushKit} zh={zh} />
-      {shortcutSettingsOpen && <ShortcutSettings kit={brushKit} zh={zh} close={() => setShortcutSettingsOpen(false)} />}
+      {canvasTools.ui}
+      {shortcutSettingsOpen && <ShortcutSettings kit={brushKit} zh={zh} bindings={canvasTools.bindings} setBindings={canvasTools.setBindings} close={() => setShortcutSettingsOpen(false)} />}
       {nudgeEnabled && <><div ref={nudgeCursor} className="nudge-cursor" hidden />
         <svg className="nudge-preview" aria-hidden="true"><path ref={nudgePreview} /></svg></>}
       {saveError && <button className="workspace-save-error" onClick={() => {
@@ -1822,4 +2099,4 @@ function App({ project, onExit }) {
   );
 }
 
-createRoot(document.getElementById("root")).render(<Gallery Editor={App} readLegacy={readIndexedCanvas} />);
+createRoot(document.getElementById("root")).render(<Gallery Editor={ProjectEditor} readLegacy={readIndexedCanvas} />);

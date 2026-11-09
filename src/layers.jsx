@@ -6,7 +6,7 @@ import { MEASURE_LAYER } from "./precision-engine.js";
 const BASE = "layer-base";
 const makeLayer = (name, id = crypto.randomUUID(), tool) => ({ id, name, visible: true, locked: false, opacity: 100, tool });
 const names = { image: "图片", text: "文字", arrow: "连线", line: "连线", frame: "框架", freedraw: "钢笔" };
-const layerOf = element => element.customData?.infiniteLayer || BASE;
+export const layerOf = element => element.customData?.infiniteLayer || BASE;
 const initialState = data => Array.isArray(data?.items) && data.items.some(item => item.id === BASE)
   ? { ...data, focus: null } : { items: [makeLayer("图层 1", BASE)], active: BASE, mode: "auto", focus: null };
 
@@ -337,7 +337,7 @@ const Thumbnail = memo(function Thumbnail({ sample }) {
 const dragType = "application/x-infinite-canvas-layer";
 const selectionDrag = "application/x-infinite-canvas-layer-selection";
 
-export function LayerPanel({ controller: layers, hasSelection, precisionTools, onTogglePrecision, onClosePrecision, gridLayer }) {
+export function LayerPanel({ controller: layers, removeModelLayer, hasSelection, precisionTools, onTogglePrecision, onClosePrecision, gridLayer }) {
   const { open, view, summaries, message } = layers;
   const [menu, setMenu] = useState(null);
   const [slider, setSlider] = useState(100);
@@ -410,7 +410,7 @@ export function LayerPanel({ controller: layers, hasSelection, precisionTools, o
           {action("select", "全选图层内容", () => { layers.selectAll(selected.id); setMenu(null); })}
           {action(selected.locked ? "unlock" : "lock", selected.locked ? "解锁图层" : "锁定图层", () => layers.patch(selected.id, { locked: !selected.locked }))}
           {action("copy", "复制图层", () => { layers.duplicate(selected.id); setMenu(null); })}
-          {action("trash", "删除图层", () => { layers.archive(selected.id, false); setMenu(null); })}
+          {action("trash", "删除图层", () => { if (selected.id === "model-underlay" && removeModelLayer) removeModelLayer(selected.id); else layers.archive(selected.id, false); setMenu(null); })}
           {action("merge", "向下合并", () => { layers.archive(selected.id, true); setMenu(null); }, items.at(-1)?.id === selected.id)}
           {action("name", "重命名图层", () => layers.rename(selected.id))}
           {action("focus", "专注图层", () => { layers.focus(selected.id); setMenu(null); })}

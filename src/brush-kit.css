@@ -178,3 +178,8 @@
 @media (max-width: 550px) {
   .brush-wheel + .brush-popover { left: 0; bottom: calc(100% + 8px); width: min(334px, calc(100vw - 35px)); max-height: calc(100dvh - 295px); }
 }
+.brush-canvas-quick { display: flex; align-items: center; justify-content: center; gap: 5px; }
+.brush-wheel .brush-canvas-quick { position: absolute; top: 99px; left: 99px; transform: translate(-50%, -50%); }
+.brush-canvas-quick button { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; color: inherit; background: #fff; border: 1px solid #dce2dd; border-radius: 9px; }
+.brush-canvas-quick button:hover, .brush-canvas-quick button[aria-pressed=true],
+.brush-actions button[aria-expanded=true] { color: #553795; background: #ede5f8; border-color: #d9caed; }

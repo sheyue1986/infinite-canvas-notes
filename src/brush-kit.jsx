@@ -21,6 +21,8 @@ const basics = [
 ];
 const tools = [
   { id: "select", name: "选择", en: "Select", type: "selection", mark: "select" },
+  { id: "magnifier", name: "放大镜", en: "Magnifier", type: "zoom", mark: "zoom" },
+  { id: "lasso", name: "套索", en: "Lasso", type: "lasso", mark: "lasso" },
   { id: "eraser", name: "对象橡皮", en: "Eraser", type: "eraser", mark: "eraser" },
   { id: "text", name: "文字", en: "Text", type: "text", mark: "text" },
   { id: "pan", name: "平移", en: "Pan", type: "hand", mark: "pan" },
@@ -39,7 +41,7 @@ const tools = [
 ];
 const initialSlots = ["pen", "dynamic", "marker", "soft", "eraser", "text", "pan", "select"];
 const directToolKeys = new Map([
-  ["p", "pen"], ["t", "text"], ["e", "eraser"], ["v", "select"], ["h", "pan"], ["l", "line"],
+  ["z", "magnifier"], ["p", "pen"], ["t", "text"], ["e", "eraser"], ["v", "select"], ["h", "pan"], ["l", "line"],
   ["r", "rectangle"], ["o", "ellipse"], ["d", "diamond"], ["a", "arrow"], ["f", "frame"], ["k", "laser"], ["b", "bucket"], ["9", "image"],
 ]);
 const toolKeyLabels = new Map([...directToolKeys].map(([key, id]) => [id, key.toUpperCase()]));
@@ -82,7 +84,7 @@ const elementStyle = {
   strokeStyle: [element => hasLineStyle(element.type) && !element.customData?.infiniteBucket, element => element.strokeStyle, "strokeStyle"],
   dashDensity: [element => hasLineStyle(element.type) && !element.customData?.infiniteBucket, element => element.customData?.infiniteDashDensity ?? defaultDashDensity],
 };
-const specialTypes = ["partial", "wand", "nudge", "bucket"];
+const specialTypes = ["partial", "wand", "nudge", "bucket", "zoom", "lasso"];
 const nativeType = tool => specialTypes.includes(tool?.type) ? "selection" : tool?.type;
 
 function selectedStyle(elements) {
@@ -295,7 +297,7 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
     apply({ ...old, slots, slot: editedSlot, custom: [...old.custom, item] }, item, true);
   };
   const shortcutTools = [...tools, ...basics, ...settings.custom];
-  const keyForTool = id => Object.hasOwn(settings.shortcuts, id) ? settings.shortcuts[id] : toolKeyLabels.get(id);
+  const keyForTool = id => id === "magnifier" ? "Z" : settings.shortcuts[id] === "Z" ? null : Object.hasOwn(settings.shortcuts, id) ? settings.shortcuts[id] : toolKeyLabels.get(id);
   const shortcutForKey = key => key && shortcutTools.find(tool => keyForTool(tool.id) === key)?.id;
   const aliasForKey = key => {
     const id = toolKeyAliases.get(key);
@@ -426,6 +428,8 @@ const glyphs = {
   arrow: "m3 16 13-12m-6 0h6v6",
   image: "M3 4h14v12H3zM4 14l4-4 3 3 3-4 2 2M7 7h.1",
   select: "m5 3 12 8-6 1-3 6Z",
+  zoom: "M8 3a5 5 0 1 0 0 10A5 5 0 0 0 8 3m4 9 5 5M5.5 8h5m-2.5-2.5v5",
+  lasso: "M6 15c-4-1-4-5-2-8 3-3 9-4 12-2 4 2 2 7-1 8-4 2-7 0-9 2-2 2 0 4 2 2 1-1 0-2-2-2Z",
   eraser: "m4 12 8-8 5 5-8 8H7Zm6 5h8M8 8l5 5",
   text: "M4 16 9 4l5 12M6 12h6m6-4v8m-3-4h4",
   pan: "M10 2v16m-3-3 3 3 3-3M2 10h16m-3-3 3 3-3 3M7 5l3-3 3 3M5 7l-3 3 3 3",
@@ -584,6 +588,7 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
   const iconButton = (glyph, title, run) => <button type="button" aria-label={title} title={title} onClick={run}><Glyph name={glyph} /></button>;
   const cards = items => <div className="brush-cards">{items.map(item => <button type="button" key={item.id} aria-pressed={settings.slots[kit.editedSlot] === item.id}
       onClick={() => kit.assign(item.id)}><Glyph name={item.mark} /><span>{label(item)}</span></button>)}</div>;
+  const [canvasToolsOpen, setCanvasToolsOpen] = useState(false);
   const bucketActive = !selection && pen?.type === "bucket";
   const hasProperty = id => selection ? Object.hasOwn(selection, id) : !!pen &&
     (id !== "tolerance" || bucketActive) && (id !== "smoothing" || pen.type === "freedraw") &&
@@ -606,7 +611,11 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
             aria-keyshortcuts={[kit.keyForTool(tool.id), `Alt+${index + 1}`].filter(Boolean).join(" ")}
             onClick={() => kit.activate(index)} onContextMenu={event => { event.preventDefault(); kit.edit(index); }}><Glyph name={tool.mark} /></button>;
         })}
-        <div className={`brush-core${selection ? " is-inspecting" : ""}`} aria-label={selectionName || undefined}>
+        {canvasToolsOpen ? <div className="brush-canvas-quick" role="group" aria-label={t("画布工具", "Canvas tools")}>
+          {tools.filter(tool => tool.id === "magnifier" || tool.id === "lasso").map(tool => <button key={tool.id} type="button"
+            title={label(tool) + (tool.id === "magnifier" ? " · Z" : "")} aria-label={label(tool)} aria-pressed={kit.active?.id === tool.id}
+            onClick={() => kit.activateById(kit.active?.id === tool.id ? "select" : tool.id)}><Glyph name={tool.mark} /></button>)}
+        </div> : <div className={`brush-core${selection ? " is-inspecting" : ""}`} aria-label={selectionName || undefined}>
           {Object.entries(metrics).filter(([id]) => id !== (bucketActive ? "width" : "tolerance")).map(([id, metric]) => id === "width" && kit.nudge ?
             <button type="button" className="brush-core-width" key={id} aria-label={t("微调范围", "Nudge radius")}
               onClick={() => kit.display("nudge")}><Glyph name="nudge" size={13} /> {settings.nudgeRadius} px</button> : id === "width" && hasFontSize ?
@@ -631,11 +640,15 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
             }} onPointerUp={() => clearTimeout(colorHold.current.timer)} onPointerLeave={() => clearTimeout(colorHold.current.timer)}
             onPointerCancel={() => clearTimeout(colorHold.current.timer)}
             disabled={!hasColor} style={{ "--brush-color": hasColor ? currentColor : "#c6cbc7" }} />
-        </div>
+        </div>}
         <div className="brush-actions">
-          {kit.shortcutTool && kit.active && kit.active.type !== "bucket" && <span className="brush-shortcut-tool" title={label(kit.active)}>{label(kit.active)}</span>}
+          {kit.shortcutTool && kit.active && !["bucket", "zoom", "lasso"].includes(kit.active.type) &&
+            <span className="brush-shortcut-tool" title={label(kit.active)}>{label(kit.active)}</span>}
           {iconButton("undo", t("撤销", "Undo"), () => document.querySelector(".excalidraw [data-testid='button-undo']")?.click())}
           {iconButton("redo", t("重做", "Redo"), () => document.querySelector(".excalidraw [data-testid='button-redo']")?.click())}
+          <button type="button" aria-expanded={canvasToolsOpen} aria-label={t("画布工具", "Canvas tools")}
+            title={t("显示或隐藏放大镜与套索", "Show or hide the magnifier and lasso")}
+            onClick={() => setCanvasToolsOpen(open => !open)}><Glyph name="zoom" /></button>
           <button type="button" onClick={() => selection ? kit.display("selection") : kit.edit()}
             aria-label={selection ? t("对象属性", "Object properties") : t(name, "Brushes & tools")}>⋯</button>
           <button type="button" onClick={kit.toggle} aria-label={t("收起工具轮", "Collapse tool wheel")}>×</button>
