@@ -20,21 +20,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Build
-        run: npm run build -- --base=/${{ github.event.repository.name }}/
+      - name: Verify the published entry point
+        run: |
+          grep -q 'src="./assets/index-icn-local-021-r2.js"' published-site/index.html
+          test -s published-site/assets/index-icn-local-021-r2.js
+          test -s published-site/assets/index-icn-local-021.css
       - name: Configure Pages
         uses: actions/configure-pages@v5
       - name: Upload website
         uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: published-site
 
   deploy:
     needs: build
@@ -46,67 +42,3 @@ jobs:
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
-
-  windows-package:
-    runs-on: windows-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.0.x
-      - name: Install Windows build dependencies
-        run: npm ci
-      - name: Build the Windows website
-        run: npm run build
-      - name: Build the Windows package
-        shell: pwsh
-        run: |
-          dotnet publish windows-launcher/InfiniteCanvasLauncher.csproj -c Release -o published-launcher
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          New-Item -ItemType Directory -Path package | Out-Null
-          Copy-Item -LiteralPath 'published-launcher/Infinite Canvas Notes.exe','published-launcher/export-blender.py' -Destination package
-          Copy-Item -LiteralPath dist -Destination package/site -Recurse
-      - name: Smoke test the Windows package
-        shell: pwsh
-        run: |
-          $launcher = (Resolve-Path -LiteralPath 'package/Infinite Canvas Notes.exe').Path
-          $process = Start-Process -FilePath $launcher -ArgumentList '--serve-only' -WindowStyle Hidden -PassThru
-          $address = 'http://127.0.0.1:4173/'
-          try {
-            $health = $null
-            for ($attempt = 0; $attempt -lt 20; $attempt++) {
-              try {
-                $health = Invoke-RestMethod ($address + '.infinite-canvas-notes') -TimeoutSec 2
-                break
-              } catch {
-                if ($process.HasExited) { throw "Launcher exited with code $($process.ExitCode)." }
-                Start-Sleep -Milliseconds 500
-              }
-            }
-            if ($health -ne 'Infinite Canvas Notes Local') { throw 'The packaged service did not respond.' }
-            $page = Invoke-WebRequest $address -TimeoutSec 10
-            $entry = [regex]::Match($page.Content, 'src="\./(assets/[^"]+\.js)"')
-            if (!$entry.Success) { throw 'The packaged page does not reference an application script.' }
-            Invoke-WebRequest ($address + $entry.Groups[1].Value) -TimeoutSec 10 | Out-Null
-            Write-Host 'Packaged launcher, local page and application script verified.'
-          } finally {
-            if (!$process.HasExited) { Stop-Process -InputObject $process }
-          }
-      - name: Upload the portable Windows build
-        uses: actions/upload-artifact@v4
-        with:
-          name: Infinite-Canvas-Notes-Windows-x64
-          if-no-files-found: error
-          path: |
-            package/Infinite Canvas Notes.exe
-            package/export-blender.py
-            package/site/

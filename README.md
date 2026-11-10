@@ -2,7 +2,7 @@
 
 面向建筑、景观与城市设计的本地优先草绘工作台。把场地地图、实测平面、三维模型取景和手绘推敲放在同一个项目里，从现状描绘推进到概念方案、节点草图和汇报图面。也可用于视觉笔记、分镜、关系图和个人素材管理。
 
-[打开网页版](https://sheyue1986.github.io/infinite-canvas-notes/) · [下载 Windows x64 便携版](https://github.com/sheyue1986/infinite-canvas-notes/actions/workflows/deploy-pages.yml) · [源码部署](#从源码运行) · [备份与迁移](#备份与迁移)
+[打开网页版](https://sheyue1986.github.io/infinite-canvas-notes/) · [下载 Windows x64 便携版](https://github.com/sheyue1986/infinite-canvas-notes/releases/tag/v0.2.1) · [本地部署](#从仓库运行) · [备份与迁移](#备份与迁移)
 
 ## 如何使用
 
@@ -10,20 +10,20 @@
 | --- | --- | --- |
 | GitHub Pages 网页版 | 快速体验、二维绘图、地图项目、通用三维格式取景 | 现代浏览器，打开网页需要联网 |
 | Windows x64 便携版 | 在本机运行，可选用已安装的 SketchUp 和 Blender 读取原生模型 | 64 位 Windows 和现代浏览器，推荐 Windows 11 x64 |
-| 从源码运行 | Windows、macOS、Linux 本地部署、开发或自建静态站点 | Node.js 22.12 或更新版本，首次安装依赖需要联网 |
+| 从仓库运行 | Windows、macOS、Linux 本地部署或自建静态站点 | Node.js 22.12 或更新版本，首次安装依赖需要联网 |
 
 三维预览和在线地图需要浏览器及显卡环境支持 WebGL 2。便携版与源码版完成准备后，可以离线打开已保存的画布、绘制草图和导入本地影像。在线街道图和地名搜索需要网络。
 
 ### Windows x64 便携版
 
-1. 登录 GitHub，打开 [Deploy to GitHub Pages 构建记录](https://github.com/sheyue1986/infinite-canvas-notes/actions/workflows/deploy-pages.yml)，选择来自 `main` 且成功的运行。
-2. 在该运行的 **Artifacts** 下载 `Infinite-Canvas-Notes-Windows-x64`。GitHub 的 Actions 产物有保留期限，链接过期时请选择更新的成功运行，或按下文从源码部署。参见 [GitHub 下载构建产物说明](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)。
-3. **完整解压**到一个普通文件夹，保持 `Infinite Canvas Notes.exe`、`site/` 和 `export-blender.py` 相邻。双击 `Infinite Canvas Notes.exe` 启动。程序会在 `http://127.0.0.1:4173/` 启动本机服务并打开画布。
+1. 在 [0.2.1 发布页](https://github.com/sheyue1986/infinite-canvas-notes/releases/tag/v0.2.1) 下载 `Infinite-Canvas-Notes-0.2.1-Windows-x64.zip`。
+2. 完整解压到固定目录。若系统缺少 WebView2，请安装 [Microsoft Edge WebView2 Evergreen x64 运行时](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)。
+3. 退出占用端口 4173 的旧版无限画布，双击 `Infinite Canvas Notes Desktop.exe`。请将 `site/`、`runtime/` 和其他解压文件保留在 EXE 旁边。
 4. 如需固定到任务栏，右键该 EXE 或它的启动快捷方式，在 Windows 的菜单中选择「固定到任务栏」。建议把便携版保存在长期使用的目录，方便快捷方式继续找到程序。
 
 便携版已包含应用运行时和构建后的站点，日常二维绘图无需另装 Node.js、.NET SDK、SketchUp 或 Blender。SKP、BLEND 导入的额外要求见下文。Windows 版本兼容范围参见 [Microsoft .NET 支持说明](https://learn.microsoft.com/en-us/dotnet/core/install/windows#supported-versions)。
 
-### 从源码运行
+### 从仓库运行
 
 安装 [Node.js](https://nodejs.org/) 22.12 或更新版本。可用 `node --version` 检查当前版本。
 
@@ -37,11 +37,13 @@ npm start
 
 没有 Git 时，可在仓库首页选择 **Code → Download ZIP**，完整解压，在含 `package.json` 的目录执行最后三条命令。打开 [http://127.0.0.1:4173/](http://127.0.0.1:4173/) 并保持启动窗口运行。Windows 完成安装和构建后，也可双击 `启动无限画布.bat`。
 
-- 开发使用 `npm run dev`，访问终端显示的地址。代码更新后重新执行 `npm ci` 和 `npm run build`。
-- 自建网站时，通过 HTTP 或 HTTPS 托管 `dist/`。部署到子路径时，将实际路径作为构建参数，例如 `npm run build -- --base=/infinite-canvas-notes/`。
-- 普通源码启动与静态网页提供同一套前端功能。原生 SKP 与 BLEND 的本机转换接口随 Windows EXE 提供。
+- `npm run build` 将 `published-site/` 中的 0.2.1 成品复制到 `dist/`。自建网站可直接托管该目录，资源路径兼容站点子目录。
+- 仓库的 `src/` 和 `windows-launcher/` 保留可开发的旧版源码。使用 `npm run dev` 或 `npm run build:source` 开发该基线。0.2.1 发布包基于本机桌面程序的已构建文件。
+- Windows 桌面包提供 SKP 与 BLEND 的本机转换接口。
 
 ## 典型工作流程
+
+**0.2.1 绘图更新**。工具按各自上次使用的样式恢复。点选或框选对象后可用浮动工具条复制、建立关联、群组、锁定、镜像和对齐。支持的矢量对象可点亮角点后拖动扭曲。尺寸标注可从圆盘设置线宽、线型、颜色、透明度和字号，斜短线比主线和引线中较粗的一条再粗 3 pt。
 
 ### 1. 场地平面与实地尺度
 
@@ -87,7 +89,7 @@ npm start
 | `.glb`、`.gltf` | 浏览器内读取。glTF 有外部缓冲和贴图时，请同时选择依赖文件 |
 | `.obj` | 浏览器内读取。可与 OBJ 一并选择 MTL 和对应贴图 |
 | SketchUp `.skp` | Windows 便携版通过本机 SketchUp 2023 的读取组件处理。组件不可用时可从 SketchUp 导出 OBJ |
-| Blender `.blend` | Windows 便携版调用已安装的 Blender 转换。建议先打包外链资源，或直接从 Blender 导出 GLB |
+| Blender `.blend` | Windows 便携版包含 Blender 5.0 转换环境。建议先打包外链资源，或直接从 Blender 导出 GLB |
 
 一次导入一个主模型及其配套文件，总计上限 256 MB。三维取景可切换模型分组显隐、设置剖切方向与位置、设置日照和投影阴影。日照支持手动方位角与高度角，也可用经纬度、日期、当地时间和北向估算。底部视角条可切换、重命名、复制、排序或删除视角。
 
@@ -119,7 +121,7 @@ npm start
 | --- | --- |
 | 打开后显示 `ERR_CONNECTION_REFUSED` | 运行 Windows 便携版 EXE 或源码启动命令，再访问本地地址。关闭占用 4173 端口的旧版服务后可重试 |
 | 便携版提示找不到应用文件 | 完整解压 ZIP，确认 EXE 旁边有 `site/index.html`。从 ZIP 预览窗口直接运行会缺少所需文件 |
-| 下载不到 Windows 包 | 登录 GitHub，在成功运行的 **Artifacts** 查找。若产物已过期，可选择更新的构建或从源码运行 |
+| 下载不到 Windows 包 | 在 [0.2.1 发布页](https://github.com/sheyue1986/infinite-canvas-notes/releases/tag/v0.2.1) 展开 Assets 下载，或使用上面的本地部署方式 |
 | 在线地图或地名搜索不可用 | 地名搜索失败时可输入经纬度定位。地图网络或 WebGL 不可用时，可改用有已知宽度的本地影像 |
 | SKP、BLEND 无法直接读取 | 确认正在运行 Windows 便携版，且目标电脑有对应模型软件及组件。也可改用 OBJ 或 GLB |
 | 换了浏览器后看不到原来的项目 | 用原配置文件和原地址打开，导出备份，再到新的环境导入 |
@@ -128,13 +130,13 @@ npm start
 
 - 画布以 [Excalidraw](https://github.com/excalidraw/excalidraw)、React 和 Vite 为基础。三维预览使用 Three.js 和 Rhino3dm，在线地图使用 MapLibre GL JS。
 - 项目、素材及模型数据在浏览器本地保存。Windows 启动器通过回环地址提供静态站点与本机模型导入接口。
-- 依赖版本与完整性校验值由 `package-lock.json` 锁定，仓库使用 npm 官方源。GitHub Actions 从同一份源码构建网页版和 Windows x64 自包含便携版，Windows 包上传前会验证启动器、首页和前端入口脚本。
+- GitHub Actions 将 `published-site/` 部署到 Pages。Windows 便携包使用同一前端版本。个人素材、快捷键和项目通过应用的备份功能迁移。
 
-开发者如需在 Windows 自行构建便携版，可安装 .NET 8 SDK，从仓库根目录在 PowerShell 中执行以下命令。
+开发者如需构建旧版启动器，可安装 .NET 8 SDK，从仓库根目录在 PowerShell 中执行以下命令。
 
 ```powershell
 npm ci
-npm run build
+npm run build:source
 dotnet publish windows-launcher/InfiniteCanvasLauncher.csproj -c Release -o package
 Copy-Item -LiteralPath dist -Destination package/site -Recurse
 ```
