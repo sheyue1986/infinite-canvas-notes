@@ -1,12 +1,23 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Excalidraw, CaptureUpdateAction, MainMenu, convertToExcalidrawElements, mutateElement, serializeAsJSON } from "@excalidraw/excalidraw";
+import { createPortal } from "react-dom";
+import { Excalidraw, CaptureUpdateAction, DefaultSidebar, Sidebar, MainMenu, convertToExcalidrawElements, exportToCanvas, mutateElement, newElementWith, serializeAsJSON } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import "./style.css";
 import "./model-workspace.css";
 import { editModelViews, emptyLibrary, exportTree, loadLibrary, materialData, packLibrary, packMaterial, saveLibrary, modelSceneKey, read, removeViewContent, saveModelView, saveProjectScene, selectProjectView, write } from "./storage.js";
 import { Gallery, coverFor, downloadBlob, downloadJSON } from "./workspace.jsx";
-import { LibraryIcon, MaterialPanel, materialDragType } from "./material-panel.jsx";
+import { MaterialPanel, materialDragType } from "./material-panel.jsx";
+import { changeWorkspaceSidebar, createWorkspaceSidebar, pasteWorkspaceTable, searchWorkspaceMaterials } from "../published-site/assets/workspace-sidebar-r10.js";
+import "../published-site/assets/workspace-sidebar.css";
+import "../published-site/assets/ai-generation-r9.css";
+import { recognizeDrawing, convertRecognizedDrawing } from "../published-site/assets/drawing-tools-r10.js";
+import { placeStickyNote } from "../published-site/assets/sticky-note.js";
+import { changeBasicShape, finishBasicShape, shapeCommands } from "../published-site/assets/basic-shapes-r10.js";
+import { createShapeControls, showShapeChooser } from "../published-site/assets/shape-controls-r10.js";
+import { createMediaLayer } from "../published-site/assets/canvas-media.js";
+import "../published-site/assets/canvas-workflow.css";
+import "../published-site/assets/shape-controls-r9.css";
 import { LayerPanel, layerOf, layerSafeElements, useLayers } from "./layers.jsx";
 import { CalibrationDialog, PrecisionPanel, PrecisionGridRow, PrecisionOverlay } from "./precision.jsx";
 import { defaults as precisionDefaults, measureAt, measured, preciseStroke } from "./precision-engine.js";
@@ -17,13 +28,16 @@ import ModelViewManager from "./ModelViewManager.jsx";
 import { drawingGuide, snapPerspective } from "./model-study.js";
 import { exportViewPng, makeModelScene, packModelProject } from "./model-views.js";
 import { useCanvasTools } from "./CanvasTools.jsx";
-import { installCommandBridge } from "./canvasCommands.js";
+import { installCommandBridge, runNativeCommand } from "./canvasCommands.js";
 import { makePrecisionCommands } from "./precision-shortcuts.js";
 import { fillAt } from "./bucket-fill.js";
 import { createNudge } from "./nudge.js";
 import { makePaintEngine, sceneImageFileIds } from "./paint-engine.js";
 
 const ModelWorkspace = React.lazy(() => import("./ModelWorkspace.jsx"));
+const WorkspaceSidebar = createWorkspaceSidebar(React, DefaultSidebar, Sidebar, { exportCanvas: exportToCanvas, convert: convertToExcalidrawElements, update: newElementWith, capture: CaptureUpdateAction.IMMEDIATELY });
+const { ShapeContext } = createShapeControls(React, createPortal, newElementWith, CaptureUpdateAction.IMMEDIATELY);
+const CanvasMedia = createMediaLayer(React);
 const isModelFile = file => /\.(glb|gltf|obj|3dm|blend|skp)$/i.test(file.name);
 
 const STORAGE_KEY = "infinite-canvas-notes-library-v2";
@@ -1279,7 +1293,7 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
 
   const handleCanvasPointerDown = useCallback((event) => {
     const api = apiRef.current;
-    if (!api || event.target.closest(".App-toolbar, .library-trigger, .object-library")) return false;
+    if (!api || event.target.closest(".App-toolbar, .library-trigger, .icn-workspace-sidebar")) return false;
     if (partialEraser && event.shiftKey) {
       event.preventDefault(); event.stopPropagation();
       partialStraightPromiseRef.current = eraseSelectedImageArea(event);
@@ -1405,7 +1419,7 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
       await flushCanvasSave();
       await libraryWriteQueueRef.current;
       if (libraryReady && savedLibrary.current !== library) {
-        setIsOpen(true);
+        changeWorkspaceSidebar(apiRef.current, "open");
         return;
       }
       const cover = await coverFor(projectScene()).catch(() => null);
@@ -1450,7 +1464,7 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
     if (failed) setLibraryError(`${failed} 张图片无法导入。支持 PNG、JPEG、WebP、GIF、AVIF 和 BMP。`);
   };
   libraryActions.current = {
-    close: () => setIsOpen(false), navigate: setPath, addPack: addFolder, saveSelection,
+    close: () => changeWorkspaceSidebar(apiRef.current, "close"), navigate: setPath, addPack: addFolder, saveSelection,
     movePack: moveFolder,
     retry: () => setLibrary(value => ({ ...value })), copy: copyLibraryItem, paste: pasteLibraryItem,
     remove: removeMaterial,
@@ -1656,6 +1670,9 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
     layerView: layerState, brushKitRef, nativeToolRef: activeToolRef, canActivate: () => drawingPointer.current === null,
     enabled: !(partialEraser || magicWand || bucketEnabled || nudgeEnabled || relationshipSourceId || measureStatus || precisionEditing),
     appCommands: {
+      changeBasicShape: () => showShapeChooser(apiRef.current),
+      ...Object.fromEntries(Object.entries(shapeCommands).map(([id, shape]) => [id,
+        () => changeBasicShape(apiRef.current, shape, newElementWith, CaptureUpdateAction.IMMEDIATELY)])),
       ...makePrecisionCommands({
         current: precisionRef, change: changePrecision, openGrid, openGuide, start: startMeasure, togglePanel: togglePrecisionPanel,
         openPanel: section => { if (!layers.open) layers.toggle(); setPrecisionOpen(true); setPrecisionSection(section); },
@@ -1663,8 +1680,11 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
       }),
       selectLayerContents: () => layers.selectAll(activeLayerId()),
       toggleLayers: layers.toggle, addLayer: () => layers.add(), focusLayer: () => layers.focus(activeLayerId()),
-      toggleLibrary: () => setIsOpen(value => !value),
-      searchMaterials: () => { setIsOpen(true); requestAnimationFrame(() => document.querySelector(".material-panel input[type=search]")?.focus()); },
+      toggleLibrary: () => changeWorkspaceSidebar(apiRef.current, "toggle"),
+      searchMaterials: () => searchWorkspaceMaterials(apiRef.current),
+      paste: () => void pasteWorkspaceTable(apiRef, {
+        zh, convert: convertToExcalidrawElements, capture: CaptureUpdateAction.IMMEDIATELY,
+      }, () => runNativeCommand("paste")),
       addMaterialFolder: addFolder, saveMaterial: saveSelection, exportMaterials: exportLibrary,
       importMaterials: () => libraryImportRef.current?.click(), importMaterialImages: () => materialImageInput.current?.click(),
       removeBackground: () => void removeSelectedImageBackground(),
@@ -1766,6 +1786,8 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
             return;
           }
           if (event.target.closest("canvas")) {
+            if (placeStickyNote(event, apiRef.current, scenePoint, convertToExcalidrawElements,
+              CaptureUpdateAction.IMMEDIATELY, brushKitRef.current, layers.canDraw, zh)) return;
             if (bucketEnabled && event.button === 0 && event.isPrimary && !apiRef.current?.getAppState().openDialog) {
               event.preventDefault(); event.stopPropagation();
               if (brushKitRef.current.panel) brushKitRef.current.setPanel(null);
@@ -1958,8 +1980,13 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
             if (stroke && stroke.type !== "freedraw" && hasLineStyle(stroke.type) && profile?.type === stroke.type && profile.strokeStyle === "dashed") {
               mutateElement(stroke, { strokeStyle: "dashed", customData: { ...stroke.customData, infiniteDashDensity: profile.dashDensity } }, false);
             }
+            if (finishBasicShape(apiRef.current, stroke, profile, newElementWith, CaptureUpdateAction.EVENTUALLY)) return;
             if (tool.type === "freedraw" && stroke?.type === "freedraw") {
+              const geometry = strokeProfile.current?.id === "drawShape"
+                ? recognizeDrawing(stroke.points.map(([x, y]) => [stroke.x + x, stroke.y + y])) : null;
               finalizeBrush(stroke, strokeProfile.current, strokePointer.current, mutateElement, strokeRelease.current);
+              // The native pointer-up finalizer records the replacement as the drawing's undo step.
+              if (convertRecognizedDrawing(apiRef.current, stroke, geometry, convertToExcalidrawElements, CaptureUpdateAction.EVENTUALLY)) return;
               const settings = precisionRef.current;
               const held = strokeHold.current?.held || 0;
               const applyPrecision = settings.guide || settings.snap && settings.grid || settings.recognize && held >= settings.hold;
@@ -1984,6 +2011,10 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
           langCode={language}
           initialData={canvasInitialData}
         >
+          <WorkspaceSidebar.Panel apiRef={apiRef} setOpen={setIsOpen} zh={zh}
+            convert={convertToExcalidrawElements} capture={CaptureUpdateAction.IMMEDIATELY}
+            library={isOpen && <MaterialPanel library={library} path={path} current={current} ready={libraryReady}
+              error={libraryError} zh={zh} clipboard={libraryClipboard} actionsRef={libraryActions} />} />
           <MainMenu>
             <MainMenu.Item onSelect={() => setModelRequest({ files: [] })}>{zh ? "导入三维模型" : "Import 3D model"}</MainMenu.Item>
             {modelView && <>
@@ -2027,6 +2058,8 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
         apply={scale => { changePrecision({ ...precisionRef.current, scale }); setCalibrationLength(null); }} />}
       <BrushKit kit={brushKit} zh={zh} />
       {canvasTools.ui}
+      <CanvasMedia apiRef={apiRef} ready={canvasReady} zh={zh} />
+      <ShapeContext apiRef={apiRef} zh={zh} />
       {shortcutSettingsOpen && <ShortcutSettings kit={brushKit} zh={zh} bindings={canvasTools.bindings} setBindings={canvasTools.setBindings} close={() => setShortcutSettingsOpen(false)} />}
       {nudgeEnabled && <><div ref={nudgeCursor} className="nudge-cursor" hidden />
         <svg className="nudge-preview" aria-hidden="true"><path ref={nudgePreview} /></svg></>}
@@ -2041,10 +2074,7 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
         void importImages([...event.target.files], path);
         event.target.value = "";
       }} />
-      <button className="library-trigger" onClick={() => setIsOpen(open => !open)} aria-expanded={isOpen}
-        title={ui.library} aria-label={ui.library}><LibraryIcon name="grid" /></button>
-      {isOpen && <MaterialPanel library={library} path={path} current={current} ready={libraryReady}
-        error={libraryError} zh={zh} clipboard={libraryClipboard} actionsRef={libraryActions} />}
+      <WorkspaceSidebar.Trigger apiRef={apiRef} open={isOpen} zh={zh} />
 
       {selectedRelationshipElement && <span className="relationship-control">
           <button

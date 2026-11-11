@@ -1,0 +1,68 @@
+.icn-diagram-editor {
+  box-sizing: border-box;
+  width: min(860px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  margin: auto;
+  padding: 18px;
+  color: #262333;
+  background: #fff;
+  border: 1px solid #e5e0ed;
+  border-radius: 14px;
+  box-shadow: 0 14px 44px #20163536;
+  font: 14px/1.5 Excalifont, Xiaolai, sans-serif;
+}
+.excalidraw .ttd-dialog, .excalidraw .PasteChartDialog {
+  --ui-font: Excalifont, Xiaolai, sans-serif;
+  font-family: var(--ui-font);
+}
+.excalidraw .ttd-dialog :is(textarea, input, kbd, pre, code, .ttd-dialog-output-error p) {
+  font-family: Excalifont, Xiaolai, sans-serif !important;
+}
+.icn-diagram-editor::backdrop { background: #2923394d; }
+.icn-diagram-editor header,
+.icn-diagram-editor footer,
+.icn-diagram-modes,
+.icn-table-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.icn-diagram-editor header { justify-content: space-between; }
+.icn-diagram-editor h2 { margin: 0; font-size: 18px; }
+.icn-diagram-modes { margin: 14px 0; }
+.icn-diagram-editor footer { justify-content: flex-end; margin-top: 14px; }
+.icn-diagram-editor button {
+  padding: 5px 11px;
+  color: inherit;
+  background: #f4f1f8;
+  border: 1px solid #ebe5f1;
+  border-radius: 7px;
+  font: inherit;
+  cursor: pointer;
+}
+.icn-diagram-modes button[aria-pressed=true] { background: #e7def5; border-color: #cbb8e3; }
+.icn-diagram-editor footer button[data-action=insert] { color: #fff; background: #6955a2; border-color: #6955a2; }
+.icn-diagram-editor button:disabled { opacity: .55; cursor: default; }
+.icn-diagram-editor :is(input, textarea, select) { box-sizing: border-box; color: inherit; font: inherit; }
+.icn-table-tools input { width: 55px; margin-inline-end: 8px; }
+.icn-table-tools small { color: #625b6b; }
+.icn-table-scroll { margin-top: 10px; max-height: 42vh; overflow: auto; }
+.icn-table-scroll table { width: 100%; border-collapse: collapse; }
+.icn-table-scroll td { min-width: 165px; padding: 0; border: 1px solid #dfd9ea; }
+.icn-table-scroll tr:first-child { background: #f0ecf7; }
+.icn-table-scroll textarea { display: block; width: 100%; min-height: 34px; padding: 6px 8px; background: transparent; border: 0; resize: vertical; }
+.icn-diagram-editor #icn-chart-data {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid #dfd9ea;
+  border-radius: 6px;
+  resize: vertical;
+}
+.icn-chart-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 10px; }
+.icn-chart-controls select { max-width: 185px; padding: 3px 5px; border: 1px solid #dfd9ea; border-radius: 5px; }
+.icn-chart-status { color: #625b6b; margin: 8px 0; }
+.icn-chart-preview { max-width: 100%; width: 100%; height: auto; max-height: 38vh; object-fit: contain; border: 1px solid #dfd9ea; border-radius: 6px; }
+.icn-diagram-error { color: #962c3e; }

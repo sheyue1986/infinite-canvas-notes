@@ -1,5 +1,8 @@
 import React, { memo, useEffect, useRef, useState } from "react";
-import { CaptureUpdateAction, newElementWith } from "@excalidraw/excalidraw";
+import { createPortal } from "react-dom";
+import { CaptureUpdateAction, convertToExcalidrawElements, newElementWith } from "@excalidraw/excalidraw";
+import { watchDiagramPaste } from "../published-site/assets/diagram-editor-r4.js";
+import "../published-site/assets/diagram-editor-r4.css";
 import { imageTint, importStamp, tintImage } from "./paint-engine.js";
 import { brushControlValue, brushDynamics, brushResponse, responseControls, speedPressure, tipControls, vectorBrushStroke } from "./brush-response.js";
 import { BrushPreview } from "./brush-preview.jsx";
@@ -8,6 +11,11 @@ import { CanvasSampler, ColorFan, ColorPanel, QuickColors, hexColor, useColors }
 import { elementOpacity, withElementOpacity } from "./layers.jsx";
 import { defaultDashDensity } from "./line-style.js";
 import "./brush-kit.css";
+import { basicShapeIcons, basicShapeTools } from "../published-site/assets/basic-shapes-r10.js";
+import { createShapeControls } from "../published-site/assets/shape-controls-r10.js";
+import { chooseCanvasMedia } from "../published-site/assets/canvas-media.js";
+
+const { PolygonSides } = createShapeControls(React, createPortal, newElementWith, CaptureUpdateAction.IMMEDIATELY);
 
 const brush = (id, name, en, width, opacity, smoothing, dynamics, mark) =>
   ({ id, name, en, width, opacity, smoothing, dynamics, mark, type: "freedraw", color: "#1b1b1f" });
@@ -28,6 +36,7 @@ const tools = [
   { id: "lasso", name: "套索", en: "Lasso", type: "lasso", mark: "lasso" },
   { id: "eraser", name: "对象橡皮", en: "Eraser", type: "eraser", mark: "eraser" },
   { id: "text", name: "文字", en: "Text", type: "text", mark: "text" },
+  { id: "stickyNote", name: "便签", en: "Sticky note", type: "stickyNote", mark: "stickyNote" },
   { id: "pan", name: "平移", en: "Pan", type: "hand", mark: "pan" },
   { id: "line", name: "直线", en: "Line", type: "line", mark: "line" },
   { id: "partial", name: "图片局部擦除", en: "Image eraser", type: "partial", mark: "eraser" },
@@ -36,16 +45,19 @@ const tools = [
   { id: "rectangle", name: "矩形", en: "Rectangle", type: "rectangle", mark: "rectangle" },
   { id: "ellipse", name: "椭圆", en: "Ellipse", type: "ellipse", mark: "ellipse" },
   { id: "diamond", name: "菱形", en: "Diamond", type: "diamond", mark: "diamond" },
+  ...basicShapeTools,
   { id: "arrow", name: "箭头", en: "Arrow", type: "arrow", mark: "arrow" },
   { id: "image", name: "图片", en: "Image", type: "image", mark: "image" },
   { id: "frame", name: "框架", en: "Frame", type: "frame", mark: "rectangle" },
+  { id: "embeddable", name: "嵌入网页", en: "Web embed", type: "embeddable", mark: "embeddable" },
+  brush("drawShape", "绘制成形", "Draw to shape", 2, 100, 35, "fixed", "drawShape"),
   { id: "laser", name: "激光笔", en: "Laser", type: "laser", mark: "wand" },
   { id: "bucket", name: "填充", en: "Bucket fill", type: "bucket", mark: "bucket", tolerance: 32 },
 ];
 const initialSlots = ["pen", "dynamic", "marker", "soft", "eraser", "text", "pan", "select"];
 const directToolKeys = new Map([
   ["z", "magnifier"], ["p", "pen"], ["t", "text"], ["e", "eraser"], ["v", "select"], ["h", "pan"], ["l", "line"],
-  ["r", "rectangle"], ["o", "ellipse"], ["d", "diamond"], ["a", "arrow"], ["f", "frame"], ["k", "laser"], ["b", "bucket"], ["9", "image"],
+  ["r", "rectangle"], ["o", "ellipse"], ["d", "diamond"], ["a", "arrow"], ["f", "frame"], ["k", "laser"], ["b", "bucket"], ["9", "image"], ["n", "stickyNote"],
 ]);
 const toolKeyLabels = new Map([...directToolKeys].map(([key, id]) => [id, key.toUpperCase()]));
 const toolKeyAliases = new Map([
@@ -89,7 +101,7 @@ const elementStyle = {
   strokeStyle: [element => hasLineStyle(element.type) && !element.customData?.infiniteBucket, element => element.strokeStyle, "strokeStyle"],
   dashDensity: [element => hasLineStyle(element.type) && !element.customData?.infiniteBucket, element => element.customData?.infiniteDashDensity ?? defaultDashDensity],
 };
-const specialTypes = ["partial", "wand", "nudge", "bucket", "zoom", "lasso"];
+const specialTypes = ["partial", "wand", "nudge", "bucket", "zoom", "lasso", "stickyNote"];
 const nativeType = tool => specialTypes.includes(tool?.type) ? "selection" : tool?.type;
 
 function selectedStyle(elements) {
@@ -154,8 +166,11 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
       const pixel = specialTypes.includes(tool.type);
       setActiveSpecial(pixel ? tool.type : null);
       onPixelTool(pixel ? tool.type : null);
-      setNative(nativeType(tool));
-      api.setActiveTool({ type: nativeType(tool) });
+      const type = tool.type === "image" ? "selection" : nativeType(tool);
+      setNative(type);
+      api.setActiveTool({ type });
+      if (tool.type === "image") chooseCanvasMedia(apiRef, convertToExcalidrawElements, CaptureUpdateAction.IMMEDIATELY,
+        document.querySelector(".app-shell")?.lang !== "en");
       if (tool.type === "nudge" || tool.type === "bucket") {
         syncSelection([], tool.type);
         api.updateScene({ appState: { selectedElementIds: {} }, captureUpdate: CaptureUpdateAction.NEVER });
@@ -183,13 +198,14 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
   const activate = (index, openDetails = true) => {
     const old = latest.current;
     const tool = entry(old, old.slots[index], index);
-    if (openDetails && tool?.type !== "freedraw" && !shortcutTool && index === old.slot && index === activeSlot) {
-      edit(index);
+    if (openDetails && tool && (index === activeSlot || shortcutTool === tool.id)) {
+      if (tool.type === "freedraw") setPanel("brushDetail");
+      else edit(index);
       return;
     }
     apply({ ...old, slot: index }, tool, true);
     setEditedSlot(index);
-    setPanel(openDetails && tool?.type === "freedraw" ? "brushDetail" : null);
+    setPanel(null);
   };
   const activateById = id => {
     const old = latest.current;
@@ -203,7 +219,7 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
     const slots = old.slots.map((value, index) => index === editedSlot ? id : value);
     const tool = entry(old, id, editedSlot);
     apply({ ...old, slots, slot: editedSlot }, tool, true);
-    if (tool?.type === "freedraw") setPanel("brushDetail");
+    setPanel(null);
   };
   const setMany = (values, expected) => {
     const api = apiRef.current;
@@ -328,6 +344,7 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
     lineTarget, toggleLineStyle, currentPen, active, shortcutTool, activateById,
     shortcutTools, keyForTool, shortcutForKey, aliasForKey,
     setToolShortcut: (id, value) => apply({ ...latest.current, shortcuts: { ...latest.current.shortcuts, [id]: value } }),
+    replaceToolShortcuts: shortcuts => apply({ ...latest.current, shortcuts }),
     resetToolShortcuts: () => apply({ ...latest.current, shortcuts: {} }),
     nudge: active?.type === "nudge",
     setNudgeRadius: value => apply({ ...latest.current, nudgeRadius: clamp(value, 8, 160) }),
@@ -416,6 +433,7 @@ export function finalizeBrush(stroke, profile, pointerType, mutate, release) {
 }
 
 const glyphs = {
+  ...basicShapeIcons,
   pen: "M3 16c5-10 8-10 7-6s1 6 8-1",
   bold: "M3 15c5-10 10-11 8-5s2 5 7-1",
   pencil: "M4 15c4-8 8-11 7-6s1 5 6-1M4 12l3-4",
@@ -445,6 +463,9 @@ const glyphs = {
   smooth: "m2 12 3-4 3 7 3-10 3 8 4-3",
   undo: "M8 5 3 10l5 5m-5-5h9c4 0 5 2 5 5",
   redo: "m12 5 5 5-5 5m5-5H8c-4 0-5 2-5 5",
+  embeddable: "M7 5 2 10l5 5m6-10 5 5-5 5",
+  drawShape: "M4 4h12v12H4zM6 13l3-3 2 1 3-4",
+  stickyNote: "M4 3h12v9l-5 5H4zM11 17v-5h5M7 7h6m-6 3h3",
 };
 function Glyph({ name, size = 19 }) {
   return <svg width={size} height={size} viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor"
@@ -555,6 +576,9 @@ function sector(index) {
 }
 
 export const BrushKit = memo(function BrushKit({ kit, zh }) {
+  useEffect(() => watchDiagramPaste(() => kit.apiRef.current, {
+    zh, convert: convertToExcalidrawElements, capture: CaptureUpdateAction.IMMEDIATELY,
+  }), [kit.apiRef, zh]);
   const root = useRef(null);
   const textureInput = useRef(null);
   const presetInput = useRef(null);
@@ -719,7 +743,8 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
         </div>}
         <div className="brush-actions">
           {kit.shortcutTool && kit.active && !["bucket", "zoom", "lasso"].includes(kit.active.type) &&
-            <span className="brush-shortcut-tool" title={label(kit.active)}>{label(kit.active)}</span>}
+            <button type="button" className="brush-shortcut-tool" title={label(kit.active)}
+              onClick={() => kit.active.type === "freedraw" ? kit.display("brushDetail") : kit.edit()}>{label(kit.active)}</button>}
           {iconButton("undo", t("撤销", "Undo"), () => document.querySelector(".excalidraw [data-testid='button-undo']")?.click())}
           {iconButton("redo", t("重做", "Redo"), () => document.querySelector(".excalidraw [data-testid='button-redo']")?.click())}
           <button type="button" aria-expanded={canvasToolsOpen} aria-label={t("画布工具", "Canvas tools")}
@@ -785,6 +810,7 @@ export const BrushKit = memo(function BrushKit({ kit, zh }) {
         {panel === "library" && <>
           <section><h3>{t("基础笔刷", "Basic brushes")}</h3>{cards(basics)}</section>
           <section><h3>{t("工具", "Tools")}</h3>{cards(tools)}</section>
+          {(pen?.id === "polygon" || settings.slots[kit.editedSlot] === "polygon") && <PolygonSides zh={zh} />}
           <section><h3>{t("我的笔刷", "My brushes")}</h3>{cards(settings.custom)}</section>
         </>}
         {(panel === "library" || brushDetail) && <section>

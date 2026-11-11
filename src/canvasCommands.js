@@ -1,11 +1,13 @@
 import { precisionCommands } from "./precision-shortcuts.js";
+import { isModifierKey, validCanvasShortcut } from "../published-site/assets/drawing-tools.js";
+import { shapeCommandRows } from "../published-site/assets/basic-shapes-r10.js";
 
 const section = (group, entries) => entries.map(([id, zh, en, key = "", native, value]) => ({ id, zh, en, key, group, native, value }));
 
 export const commands = [
   ...section("precision", precisionCommands),
   ...section("view", [
-    ["stats", "精确属性面板", "Precision properties", "Alt+Slash"],
+    ["stats", "精确属性面板", "Precision properties"],
     ["zoomIn", "放大一级", "Zoom in", "Ctrl+Equal"],
     ["zoomOut", "缩小一级", "Zoom out", "Ctrl+Minus"],
     ["resetZoom", "缩放至 100%", "Reset zoom", "Ctrl+Digit0"],
@@ -96,6 +98,7 @@ export const commands = [
     ["opacityHalf", "不透明度 50%", "Opacity 50%", "", "changeOpacity", 50],
     ["opacityQuarter", "不透明度 25%", "Opacity 25%", "", "changeOpacity", 25],
   ]),
+  ...section("shape", shapeCommandRows),
   ...section("library", [
     ["toggleLibrary", "打开／关闭素材库", "Toggle material library"],
     ["searchMaterials", "搜索素材", "Search materials"],
@@ -123,7 +126,7 @@ export const commands = [
 export const shortcutById = Object.fromEntries(commands.map((command) => [command.id, command]));
 
 export function keyChord(event) {
-  if (!event.code || /^(Control|Meta|Shift|Alt)(Left|Right)$/.test(event.code)) return "";
+  if (!event.code || isModifierKey(event)) return "";
   return [event.ctrlKey || event.metaKey ? "Ctrl" : "", event.altKey ? "Alt" : "", event.shiftKey ? "Shift" : "", event.code].filter(Boolean).join("+");
 }
 
@@ -138,14 +141,15 @@ export function keyLabel(chord) {
 export function readShortcuts() {
   try {
     const saved = JSON.parse(localStorage.getItem("icn-shortcuts-v1")) || {};
-    return Object.fromEntries(Object.entries(saved).filter(([id, key]) => shortcutById[id] && typeof key === "string"));
+    return Object.fromEntries(Object.entries(saved).filter(([id, key]) => shortcutById[id] && validCanvasShortcut(shortcutById[id], key)));
   } catch {
     return {};
   }
 }
 
 export function assignedKey(command, bindings) {
-  return bindings[command.id] ?? command.key;
+  const assigned = bindings[command.id] ?? command.key;
+  return validCanvasShortcut(command, assigned) ? assigned : "";
 }
 
 const nativeCommand = Symbol("canvas command");
@@ -190,6 +194,7 @@ export const commandGroups = {
   selection: ["选区与变换", "Selection & transforms"],
   edit: ["编辑与排列", "Edit & arrange"],
   style: ["样式预设", "Style presets"],
+  shape: ["更换形状", "Change shape"],
   library: ["素材与文件", "Materials & files"],
 };
 export const nativeAliases = {

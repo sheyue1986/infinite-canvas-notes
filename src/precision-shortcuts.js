@@ -31,7 +31,7 @@ const panels = [
 
 export const precisionCommands = [
   ["precisionPanel", "打开／关闭精准工具", "Toggle precision tools"],
-  ["precisionGrid", "网格", "Toggle grid", "Ctrl+Quote"],
+  ["precisionGrid", "网格", "Toggle grid"],
   ["precisionGridVisible", "显示／隐藏网格图层", "Show / hide grid layer"],
   ["precisionGuide", "辅助线", "Toggle guide"],
   ["precisionGridEdit", "编辑网格控制点", "Edit grid handles"],

@@ -164,6 +164,7 @@ export function sceneImageFileIds(elements) {
     if (element.fileId) ids.add(element.fileId);
     const sourceId = imageTint(element)?.sourceId;
     if (sourceId) ids.add(sourceId);
+    if (element.customData?.icnVideoId) ids.add(element.customData.icnVideoId);
   }
   return ids;
 }

@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import "./tool-shortcuts.css";
 import { assignedKey, commandGroups, commands, keyChord, keyLabel, nativeAliases } from "./canvasCommands.js";
+import { validCanvasShortcut } from "../published-site/assets/drawing-tools.js";
+import { createShortcutTransfer, validToolBinding } from "../published-site/assets/shortcut-transfer.js";
+
+const ShortcutTransfer = createShortcutTransfer(React, commands);
 
 export function shortcutFromEvent(event) {
   const key = event.shiftKey && /^Digit[0-9]$/.test(event.code) ? event.code.at(-1) : event.key;
@@ -23,7 +27,7 @@ export function ShortcutSettings({ kit, zh, close, bindings, setBindings }) {
     event.stopPropagation();
     if (event.key === "Escape") { setCapturing(null); setMessage(""); return; }
     const key = shortcutFromEvent(event);
-    if (!key || key === "Z" || /^(Alt\+[1-8DEFL]|Shift\+[12GS])$/.test(key)) {
+    if (!key || !validToolBinding(key)) {
       setMessage(t("请使用可分配的字母或数字，可搭配 Alt、Shift。此按键保留给浏览器或画布。", "Use an available letter or number, with optional Alt or Shift. This key is reserved."));
       return;
     }
@@ -47,6 +51,10 @@ export function ShortcutSettings({ kit, zh, close, bindings, setBindings }) {
     if (event.key === "Escape") { setCapturing(null); setMessage(""); return; }
     const chord = keyChord(event);
     if (!chord) return;
+    if (!validCanvasShortcut(item, chord)) {
+      setMessage(t("精准工具请使用单键，不能搭配 Ctrl、Shift、Alt 或系统键。", "Use a single key without modifiers for precision tools."));
+      return;
+    }
     const toolKey = shortcutFromEvent(event);
     if (["KeyZ", "Space", "Enter", "Alt+F4"].includes(chord) || /^Alt\+[1-8]$/.test(toolKey || "")) {
       setMessage(t("此按键保留给放大镜、工具槽位或基础交互。", "This key is reserved for the magnifier, tool slots, or navigation.")); return;
@@ -106,6 +114,7 @@ export function ShortcutSettings({ kit, zh, close, bindings, setBindings }) {
       </div>;
     })}</div>
     <footer><button type="button" onClick={() => { if (tab === "commands") setBindings({}); else kit.resetToolShortcuts(); setCapturing(null); setMessage(""); }}>{t("恢复默认", "Reset defaults")}</button>
+      <ShortcutTransfer {...{ kit, zh, bindings, setBindings, setMessage }} />
       <button type="button" onClick={close}>{t("完成", "Done")}</button></footer>
   </dialog>;
 }

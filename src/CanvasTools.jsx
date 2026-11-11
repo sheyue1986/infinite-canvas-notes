@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { CaptureUpdateAction, exportToBlob, getCommonBounds, newElementWith, viewportCoordsToSceneCoords } from "@excalidraw/excalidraw";
 import { assignedKey, commands, isCommandEvent, keyChord, nativeAliases, readShortcuts, runNativeCommand, shortcutById } from "./canvasCommands";
+import { isPrecisionShortcut } from "../published-site/assets/drawing-tools.js";
 import { elementOpacity, layerOf, withElementOpacity } from "./layers.jsx";
 import { shortcutFromEvent } from "./tool-shortcuts.jsx";
 import "./selection-tools.css";
@@ -22,6 +23,30 @@ const paths = {
 
 function Icon({ name }) {
   return <svg aria-hidden="true" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" strokeLinejoin="round"><path d={paths[name]} /></svg>;
+}
+
+const alignment = ["alignLeft", "alignRight", "alignTop", "alignBottom", "alignVerticallyCentered",
+  "alignHorizontallyCentered", "distributeHorizontally", "distributeVertically"];
+
+function AlignmentMenu({ zh, disabled, count, choose }) {
+  const [open, setOpen] = useState(false);
+  return <div className="icn-local-align" onBlur={event => {
+    if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+  }} onKeyDown={event => {
+    if (event.key === "Escape" && open) {
+      setOpen(false);
+      event.currentTarget.firstElementChild.focus();
+    }
+  }}>
+    <button type="button" aria-label={zh ? "对齐" : "Align"} aria-expanded={open && !disabled}
+      disabled={disabled} onClick={() => setOpen(value => !value)}>
+      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true"><path d="M3 3v14m3-12h11M6 9h8m-8 4h11" /></svg>
+    </button>
+    {open && !disabled && <div className="icn-local-align-options" role="group" aria-label={zh ? "对齐方向" : "Alignment directions"}>
+      {alignment.map(id => <button type="button" key={id} disabled={id.startsWith("distribute") && count < 3}
+        onClick={() => { choose(id); setOpen(false); }}>{zh ? shortcutById[id].zh : shortcutById[id].en}</button>)}
+    </div>}
+  </div>;
 }
 
 const choose = (zh, chinese, english) => zh ? chinese : english;
@@ -179,18 +204,21 @@ export function useCanvasTools({ apiRef, zh, viewport, overlay, enabled, appComm
   useEffect(() => {
     function keydown(event) {
       if (isCommandEvent(event) || !event.isTrusted || event.isComposing) return;
-      if (settingsOpen || event.target.closest?.("input, textarea, select, [contenteditable], [role='dialog']")) return;
+      if (settingsOpen || event.target.closest?.("input, textarea, select, [contenteditable], dialog, [role='dialog']")) return;
       if (!ready) return;
       const state = apiRef.current?.getAppState();
       if (state?.openDialog || state?.editingTextElement) return;
       if (event.key === "Escape") { cancel(); return; }
       const chord = keyChord(event);
+      if (!chord) return;
       const toolKey = shortcutFromEvent(event);
       const kit = brushKitRef.current;
       const nextTool = kit.shortcutForKey(toolKey) || kit.aliasForKey(toolKey) || /^Alt\+[1-8]$/.test(toolKey || "");
-      if (nextTool) return;
-      const command = commands.find((item) => bindings[item.id] && assignedKey(item, bindings) === chord)
+      const explicit = commands.find((item) => bindings[item.id] && assignedKey(item, bindings) === chord);
+      if (nextTool && !explicit) return;
+      const command = explicit
         || commands.find((item) => bindings[item.id] == null && (item.key === chord || nativeAliases[item.id]?.includes(chord)));
+      if (command && isPrecisionShortcut(command) && event.repeat) return;
       const outsideEditor = !event.target.closest?.(".excalidraw, .object-library");
       const owned = command && (command.id in appCommands || bindings[command.id] != null
         || (outsideEditor && !["copy", "cut", "paste"].includes(command.id)));
@@ -198,6 +226,9 @@ export function useCanvasTools({ apiRef, zh, viewport, overlay, enabled, appComm
         event.preventDefault();
         event.stopImmediatePropagation();
         execute(command.id);
+      } else if (!command && chord === "Alt+Slash") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
       } else if (!command && chord && commands.some((item) => bindings[item.id] != null && (item.key === chord || nativeAliases[item.id]?.includes(chord)))) {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -474,6 +505,7 @@ export function useCanvasTools({ apiRef, zh, viewport, overlay, enabled, appComm
   const singleGroup = members[0]?.groupIds.at(-1);
   const groupAction = singleGroup && members.every((item) => item.groupIds.includes(singleGroup)) ? "ungroup" : "group";
   const actionButtons = ["copyAsPng", "duplicateSelection", groupAction, "toggleElementLock", "deleteSelectedElements", "flipHorizontal", "flipVertical"];
+  const alignCount = new Set(members.map(element => element.groupIds.at(-1) || element.containerId || element.id)).size;
   const lockedSelection = members.some((item) => item.locked);
   const hasSelection = Boolean(bounds && viewport);
   const topLeft = hasSelection ? toViewport([left, top]) : null;
@@ -530,11 +562,13 @@ export function useCanvasTools({ apiRef, zh, viewport, overlay, enabled, appComm
         </g>}
       </svg>}
       {usePopup && <>
-        <div className="icn-selection-popup" style={{ left: centerX, top: popupY }}>
+        <div className="icn-selection-popup" style={{ "--icn-selection-center": `${centerX}px`, top: popupY }}>
           <div className="icn-pills" role="toolbar" aria-label={t("选区操作", "Selection actions")}>
             {actionButtons.map((id) => <button key={id} type="button" title={commandLabel(id)} aria-label={commandLabel(id)}
               disabled={lockedSelection && id !== "toggleElementLock" && id !== "copyAsPng" || id === "group" && members.length < 2}
               className={id === "toggleElementLock" && lockedSelection ? "is-on" : ""} onClick={() => execute(id)}><Icon name={id} /></button>)}
+            <AlignmentMenu key={members.map(element => element.id).join(",")} zh={zh}
+              disabled={lockedSelection || alignCount < 2} count={alignCount} choose={execute} />
           </div>
           <div className="icn-measures">
             <NumberField key={overlay?.version} label={members.length === 1 ? t("角度", "Angle") : t("旋转量", "Rotate by")} value={angle} unit="°" disabled={!canRotate} onCommit={(value) => { if (Number.isFinite(value)) updateTransform({ angle: (value - angle) * Math.PI / 180 }); }} />

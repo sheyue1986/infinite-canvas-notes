@@ -20,17 +20,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Verify the published entry point
-        run: |
-          grep -q 'src="./assets/index-icn-local-021-r2.js"' published-site/index.html
-          test -s published-site/assets/index-icn-local-021-r2.js
-          test -s published-site/assets/index-icn-local-021.css
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify and stage the publication
+        run: node scripts/stage-published-site.mjs
       - name: Configure Pages
         uses: actions/configure-pages@v5
       - name: Upload website
         uses: actions/upload-pages-artifact@v3
         with:
-          path: published-site
+          path: dist
 
   deploy:
     needs: build

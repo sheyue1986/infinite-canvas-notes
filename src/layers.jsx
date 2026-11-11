@@ -146,7 +146,8 @@ export function useLayers(project, apiRef, brushRef) {
         if (owned && next.mode === "auto" && !owned.archived && owned.visible && !owned.locked && !next.focus) return element;
         let target = ids.get(next.focus || next.active);
         if (next.mode === "auto" && !next.focus) {
-          const name = element.customData?.infiniteBrush?.name || (element.type === "freedraw" ? brushRef.current : names[element.type] || "图形");
+          const name = element.customData?.icnBasicShape ? "图形" :
+            element.customData?.infiniteBrush?.name || (element.type === "freedraw" ? brushRef.current : names[element.type] || "图形");
           const key = element.groupIds?.at(-1) || element.frameId || element.containerId || element.id;
           target = objectLayers.get(key) || next.items.find(item => item.tool === name && item.visible && !item.locked && !item.archived);
           if (!target) {

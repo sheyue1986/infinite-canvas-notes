@@ -1,0 +1,47 @@
+.excalidraw .context-menu:has(.icn-change-shape-menu) { display: flex; flex-direction: column; }
+.excalidraw .icn-change-shape-menu { order: -1; }
+.app-shell:has(.dropdown-menu-container .dropdown-menu-item) .layer-panel { visibility: hidden; }
+.icn-shape-sides { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
+.icn-shape-sides input { width: 65px; }
+.icn-shape-dialog {
+  box-sizing: border-box;
+  width: min(448px, calc(100vw - 32px));
+  padding: 18px;
+  border: 1px solid #ded9ea;
+  border-radius: 12px;
+  background: #fff;
+  color: #292535;
+  font: 14px/1.5 Excalifont, Xiaolai, system-ui, sans-serif;
+}
+.icn-shape-dialog::backdrop { background: #24222d33; }
+.icn-shape-chooser { display: grid; gap: 12px; }
+.icn-shape-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(78px, 1fr)); gap: 7px; }
+.icn-shape-dialog .icn-shape-choices button {
+  display: grid; justify-items: center; align-content: center; min-height: 66px; gap: 3px;
+  padding: 5px; border: 1px solid transparent;
+}
+.icn-shape-dialog .icn-shape-choices button:is(:hover, [aria-pressed=true]) {
+  border-color: #ad9cce; background: #ebe4f9; color: #4d3879;
+}
+.icn-shape-dialog h2 { margin: 0; font-size: 17px; }
+.icn-shape-dialog input, .brush-popover .icn-shape-sides input {
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: 1px solid #ded9ea;
+  border-radius: 6px;
+  background: white;
+  color: inherit;
+  font: inherit;
+}
+.icn-shape-dialog footer { display: flex; justify-content: flex-end; gap: 8px; }
+.icn-shape-dialog button {
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 10px;
+  background: #f0edf6;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.icn-shape-dialog button:disabled { opacity: .5; cursor: default; }
+.shortcut-settings .icn-shortcut-transfer { display: flex; gap: 6px; margin-right: auto; }
