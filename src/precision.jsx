@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import { gridTypes, guides, measured, perspectiveCount, guidePath, unitMeters, midpoint, rotatePoint } from "./precision-engine.js";
 import "./precision.css";
+import { createAreaFillUI } from "../published-site/assets/area-fill-ui.js";
+
+const { AreaToggle } = createAreaFillUI(React);
 
 const fields = [
   ["grid", "网格", value => gridTypes[value.gridType]],
@@ -10,7 +13,7 @@ const fields = [
   ["recognize", "识别", value => value.hold / 1000 + " 秒"],
 ];
 
-export function PrecisionPanel({ value, change, start, section, setSection, editing, setEditing, openGuide, openGrid }) {
+export function PrecisionPanel({ value, change, start, section, setSection, editing, setEditing, openGuide, openGrid, toggleAreaFill }) {
   const patch = changes => change({ ...value, ...changes });
   const mapScale = value.mapScale?.metersPerPoint / unitMeters[value.unit];
   const hasMapScale = Number.isFinite(mapScale) && mapScale > 0;
@@ -77,6 +80,7 @@ export function PrecisionPanel({ value, change, start, section, setSection, edit
         {hasMapScale && !usingMapScale && <button onClick={() => patch({ scale: mapScale })}>恢复底图比例</button>}
         <button onClick={() => start("calibrate")}>两点校准比例</button>
         <button onClick={() => start("measure")}>标注长度</button>
+        <AreaToggle enabled={value.areaFill} toggle={toggleAreaFill} />
         {value.scale && <button onClick={() => patch({ scale: null })}>重置比例</button>}
       </>}
       {section === "guide" && <>
