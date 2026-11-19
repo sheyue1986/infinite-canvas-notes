@@ -1,27 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
-import { Excalidraw, CaptureUpdateAction, DefaultSidebar, Sidebar, MainMenu, convertToExcalidrawElements, exportToCanvas, mutateElement, newElementWith, serializeAsJSON } from "@excalidraw/excalidraw";
+import { Excalidraw, CaptureUpdateAction, MainMenu, convertToExcalidrawElements, newElementWith, mutateElement, serializeAsJSON, exportToCanvas, exportToSvg } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import "./style.css";
 import "./model-workspace.css";
 import { editModelViews, emptyLibrary, exportTree, loadLibrary, materialData, packLibrary, packMaterial, saveLibrary, modelSceneKey, read, removeViewContent, saveModelView, saveProjectScene, selectProjectView, write } from "./storage.js";
 import { Gallery, coverFor, downloadBlob, downloadJSON } from "./workspace.jsx";
-import { MaterialPanel, materialDragType } from "./material-panel.jsx";
-import { changeWorkspaceSidebar, createWorkspaceSidebar, pasteWorkspaceTable, searchWorkspaceMaterials } from "../published-site/assets/workspace-sidebar-r10.js";
-import "../published-site/assets/workspace-sidebar.css";
-import "../published-site/assets/ai-generation-r9.css";
-import { recognizeDrawing, convertRecognizedDrawing } from "../published-site/assets/drawing-tools-r10.js";
-import { placeStickyNote } from "../published-site/assets/sticky-note.js";
-import { updateLineVertex } from "../published-site/assets/line-vertices.js";
-import { applyPrecisionStroke } from "../published-site/assets/precision-stroke.js";
-import { changeBasicShape, finishBasicShape, shapeCommands } from "../published-site/assets/basic-shapes-r10.js";
-import { createShapeControls, showShapeChooser } from "../published-site/assets/shape-controls-r10.js";
-import { createMediaLayer } from "../published-site/assets/canvas-media.js";
-import "../published-site/assets/canvas-workflow.css";
-import "../published-site/assets/shape-controls-r9.css";
+import { LibraryIcon, MaterialPanel, materialDragType } from "./material-panel.jsx";
 import { LayerPanel, layerOf, layerSafeElements, useLayers } from "./layers.jsx";
-import { CalibrationDialog, PrecisionPanel, PrecisionGridRow, PrecisionOverlay } from "./precision.jsx";
+import { CalibrationDialog, DimensionPreview, PrecisionPanel, PrecisionGridRow, PrecisionOverlay } from "./precision.jsx";
 import { defaults as precisionDefaults, measureAt, measured, preciseStroke } from "./precision-engine.js";
 import { BrushKit, finalizeBrush, hasLineStyle, isDefaultToolKey, useBrushKit } from "./brush-kit.jsx";
 import { ShortcutSettings, shortcutFromEvent } from "./tool-shortcuts.jsx";
@@ -30,19 +18,20 @@ import ModelViewManager from "./ModelViewManager.jsx";
 import { drawingGuide, snapPerspective } from "./model-study.js";
 import { exportViewPng, makeModelScene, packModelProject } from "./model-views.js";
 import { useCanvasTools } from "./CanvasTools.jsx";
-import { installCommandBridge, runNativeCommand } from "./canvasCommands.js";
+import { installCommandBridge } from "./canvasCommands.js";
 import { makePrecisionCommands } from "./precision-shortcuts.js";
 import { fillAt } from "./bucket-fill.js";
-import { createAreaFillUI } from "../published-site/assets/area-fill-ui.js";
-import "../published-site/assets/area-fill.css";
 import { createNudge } from "./nudge.js";
 import { makePaintEngine, sceneImageFileIds } from "./paint-engine.js";
+import { createSelectionProperties } from "./selection-properties.js";
+import "./selection-properties.css";
+import { createExportHub } from "./export-hub.js";
+import { canvasBusy } from './canvas-activity.js';
+import "./export-hub.css";
+const ExportHub = createExportHub(React, createPortal, convertToExcalidrawElements, newElementWith, CaptureUpdateAction, exportToCanvas, exportToSvg);
+const SelectionProperties = createSelectionProperties(React, createPortal, newElementWith, convertToExcalidrawElements, CaptureUpdateAction);
 
 const ModelWorkspace = React.lazy(() => import("./ModelWorkspace.jsx"));
-const WorkspaceSidebar = createWorkspaceSidebar(React, DefaultSidebar, Sidebar, { exportCanvas: exportToCanvas, convert: convertToExcalidrawElements, update: newElementWith, capture: CaptureUpdateAction.IMMEDIATELY });
-const { ShapeContext } = createShapeControls(React, createPortal, newElementWith, CaptureUpdateAction.IMMEDIATELY);
-const CanvasMedia = createMediaLayer(React);
-const { AreaReadouts } = createAreaFillUI(React, measured);
 const isModelFile = file => /\.(glb|gltf|obj|3dm|blend|skp)$/i.test(file.name);
 
 const STORAGE_KEY = "infinite-canvas-notes-library-v2";
@@ -1298,7 +1287,7 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
 
   const handleCanvasPointerDown = useCallback((event) => {
     const api = apiRef.current;
-    if (!api || event.target.closest(".App-toolbar, .library-trigger, .icn-workspace-sidebar")) return false;
+    if (!api || event.target.closest(".App-toolbar, .library-trigger, .object-library")) return false;
     if (partialEraser && event.shiftKey) {
       event.preventDefault(); event.stopPropagation();
       partialStraightPromiseRef.current = eraseSelectedImageArea(event);
@@ -1392,7 +1381,7 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
   };
   const openGrid = () => {
     const current = precisionRef.current;
-    const [x, y] = current.gridPlaced ? current.origin : precisionCenter();
+    const [x, y] = current.gridPlaced ? current.origin : current.mapScale ? [0, 0] : precisionCenter();
     changePrecision({ ...current, grid: true, gridVisible: true, gridPlaced: true, origin: [x, y],
       vanishing: current.vanishing || [[x + 280, y], [x - 280, y], [x, y - 220]] });
   };
@@ -1404,20 +1393,15 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
   };
   const startMeasure = kind => {
     setPrecisionEditing(null);
+    if (kind === "measure") {
+      apiRef.current?.updateScene({ appState: { selectedElementIds: {} }, captureUpdate: CaptureUpdateAction.NEVER });
+      brushKitRef.current.activateById("line");
+      brushKitRef.current.show();
+    }
     measureRef.current = { kind, start: null, status: setMeasureStatus, calibrate: setCalibrationLength };
     setMeasureStatus("点击起点，Esc 取消");
   };
   const closePrecision = () => { setPrecisionOpen(false); setPrecisionEditing(null); };
-  const toggleAreaFill = () => {
-    const enabled = !precisionRef.current.areaFill;
-    if (enabled) {
-      setPrecisionEditing(null);
-      measureRef.current = null;
-      setMeasureStatus("");
-      brushKitRef.current.activateById("bucket");
-    }
-    changePrecision({ ...precisionRef.current, areaFill: enabled });
-  };
   const projectScene = () => {
     const api = apiRef.current;
     const elements = api.getSceneElements();
@@ -1434,7 +1418,7 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
       await flushCanvasSave();
       await libraryWriteQueueRef.current;
       if (libraryReady && savedLibrary.current !== library) {
-        changeWorkspaceSidebar(apiRef.current, "open");
+        setIsOpen(true);
         return;
       }
       const cover = await coverFor(projectScene()).catch(() => null);
@@ -1479,7 +1463,7 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
     if (failed) setLibraryError(`${failed} 张图片无法导入。支持 PNG、JPEG、WebP、GIF、AVIF 和 BMP。`);
   };
   libraryActions.current = {
-    close: () => changeWorkspaceSidebar(apiRef.current, "close"), navigate: setPath, addPack: addFolder, saveSelection,
+    close: () => setIsOpen(false), navigate: setPath, addPack: addFolder, saveSelection,
     movePack: moveFolder,
     retry: () => setLibrary(value => ({ ...value })), copy: copyLibraryItem, paste: pasteLibraryItem,
     remove: removeMaterial,
@@ -1685,9 +1669,6 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
     layerView: layerState, brushKitRef, nativeToolRef: activeToolRef, canActivate: () => drawingPointer.current === null,
     enabled: !(partialEraser || magicWand || bucketEnabled || nudgeEnabled || relationshipSourceId || measureStatus || precisionEditing),
     appCommands: {
-      changeBasicShape: () => showShapeChooser(apiRef.current),
-      ...Object.fromEntries(Object.entries(shapeCommands).map(([id, shape]) => [id,
-        () => changeBasicShape(apiRef.current, shape, newElementWith, CaptureUpdateAction.IMMEDIATELY)])),
       ...makePrecisionCommands({
         current: precisionRef, change: changePrecision, openGrid, openGuide, start: startMeasure, togglePanel: togglePrecisionPanel,
         openPanel: section => { if (!layers.open) layers.toggle(); setPrecisionOpen(true); setPrecisionSection(section); },
@@ -1695,11 +1676,8 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
       }),
       selectLayerContents: () => layers.selectAll(activeLayerId()),
       toggleLayers: layers.toggle, addLayer: () => layers.add(), focusLayer: () => layers.focus(activeLayerId()),
-      toggleLibrary: () => changeWorkspaceSidebar(apiRef.current, "toggle"),
-      searchMaterials: () => searchWorkspaceMaterials(apiRef.current),
-      paste: () => void pasteWorkspaceTable(apiRef, {
-        zh, convert: convertToExcalidrawElements, capture: CaptureUpdateAction.IMMEDIATELY,
-      }, () => runNativeCommand("paste")),
+      toggleLibrary: () => setIsOpen(value => !value),
+      searchMaterials: () => { setIsOpen(true); requestAnimationFrame(() => document.querySelector(".material-panel input[type=search]")?.focus()); },
       addMaterialFolder: addFolder, saveMaterial: saveSelection, exportMaterials: exportLibrary,
       importMaterials: () => libraryImportRef.current?.click(), importMaterialImages: () => materialImageInput.current?.click(),
       removeBackground: () => void removeSelectedImageBackground(),
@@ -1788,21 +1766,19 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
         onPointerDownCapture={(event) => {
           if (canvasTools.onDown(event)) return;
           if (event.button === 0 && event.isPrimary && event.target.closest("canvas")) drawingPointer.current = event.pointerId;
+          if (measureRef.current && event.button === 0 && event.target.closest("canvas")) {
+            event.preventDefault();
+            event.stopPropagation();
+            measureAt(event, apiRef.current, measureRef, precisionRef.current, () => layers.showMeasurements(true), brushKitRef.current.currentPen());
+            return;
+          }
           if (event.button === 0 && event.target.closest("canvas") && apiRef.current &&
               !layers.canDraw(apiRef.current.getAppState())) {
             event.preventDefault();
             event.stopPropagation();
             return;
           }
-          if (measureRef.current && event.button === 0 && event.target.closest("canvas")) {
-            event.preventDefault();
-            event.stopPropagation();
-            measureAt(event, apiRef.current, measureRef, precisionRef.current, () => layers.showMeasurements(true));
-            return;
-          }
           if (event.target.closest("canvas")) {
-            if (placeStickyNote(event, apiRef.current, scenePoint, convertToExcalidrawElements,
-              CaptureUpdateAction.IMMEDIATELY, brushKitRef.current, layers.canDraw, zh)) return;
             if (bucketEnabled && event.button === 0 && event.isPrimary && !apiRef.current?.getAppState().openDialog) {
               event.preventDefault(); event.stopPropagation();
               if (brushKitRef.current.panel) brushKitRef.current.setPanel(null);
@@ -1823,7 +1799,6 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
               event.stopPropagation();
               return;
             }
-            if (state?.multiElement?.type === "line") updateLineVertex(event, state, scenePoint(event, apiRef.current), mutateElement);
             if (state?.activeTool.type === "freedraw" && precisionRef.current.recognize) {
               strokeHold.current = { x: event.clientX, y: event.clientY, last: performance.now(), held: 0 };
             } else strokeHold.current = null;
@@ -1900,7 +1875,7 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
             event.preventDefault(); event.stopPropagation();
             const api = apiRef.current;
             if (api && event.target.closest("canvas") && Math.hypot(event.clientX - bucket.x, event.clientY - bucket.y) <= 6) {
-              const result = fillAt(api, scenePoint(event, api), brushKitRef.current.currentPen(), layerState.current, precisionRef.current.areaFill);
+              const result = fillAt(api, scenePoint(event, api), brushKitRef.current.currentPen(), layerState.current);
               if (result) api.setToast({ message: zh ? result.zh : result.en });
             }
             return;
@@ -1922,6 +1897,7 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
           onLinkOpen={handleNativeLinkOpen}
           onPointerDown={handleExcalidrawPointerDown}
           onChange={(elements, appState, files) => {
+            if (canvasBusy()) return;
             const nextCanvasViewport = {
               scrollX: appState.scrollX || 0,
               scrollY: appState.scrollY || 0,
@@ -1996,14 +1972,8 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
             if (stroke && stroke.type !== "freedraw" && hasLineStyle(stroke.type) && profile?.type === stroke.type && profile.strokeStyle === "dashed") {
               mutateElement(stroke, { strokeStyle: "dashed", customData: { ...stroke.customData, infiniteDashDensity: profile.dashDensity } }, false);
             }
-            if (finishBasicShape(apiRef.current, stroke, profile, newElementWith, CaptureUpdateAction.EVENTUALLY)) return;
             if (tool.type === "freedraw" && stroke?.type === "freedraw") {
-              const geometry = strokeProfile.current?.id === "drawShape"
-                ? recognizeDrawing(stroke.points.map(([x, y]) => [stroke.x + x, stroke.y + y])) : null;
-              const release = strokeRelease.current;
-              finalizeBrush(stroke, strokeProfile.current, strokePointer.current, mutateElement, release);
-              // The native pointer-up finalizer records the replacement as the drawing's undo step.
-              if (convertRecognizedDrawing(apiRef.current, stroke, geometry, convertToExcalidrawElements, CaptureUpdateAction.EVENTUALLY)) return;
+              finalizeBrush(stroke, strokeProfile.current, strokePointer.current, mutateElement, strokeRelease.current);
               const settings = precisionRef.current;
               const held = strokeHold.current?.held || 0;
               const applyPrecision = settings.guide || settings.snap && settings.grid || settings.recognize && held >= settings.hold;
@@ -2018,7 +1988,7 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
                   if (finalPressure !== undefined && completed.pressures.at(-1) !== finalPressure) {
                     mutateElement(completed, { pressures: [...completed.pressures.slice(0, -1), finalPressure] });
                   }
-                  if (applyPrecision) applyPrecisionStroke(completed, settings, held, mutateElement, api.getAppState().zoom.value, preciseStroke, release);
+                  if (applyPrecision) preciseStroke(completed, settings, held, (element, updates) => mutateElement(element, updates));
                 });
               }
             }
@@ -2028,10 +1998,6 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
           langCode={language}
           initialData={canvasInitialData}
         >
-          <WorkspaceSidebar.Panel apiRef={apiRef} setOpen={setIsOpen} zh={zh}
-            convert={convertToExcalidrawElements} capture={CaptureUpdateAction.IMMEDIATELY}
-            library={isOpen && <MaterialPanel library={library} path={path} current={current} ready={libraryReady}
-              error={libraryError} zh={zh} clipboard={libraryClipboard} actionsRef={libraryActions} />} />
           <MainMenu>
             <MainMenu.Item onSelect={() => setModelRequest({ files: [] })}>{zh ? "导入三维模型" : "Import 3D model"}</MainMenu.Item>
             {modelView && <>
@@ -2051,6 +2017,7 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
             <MainMenu.Item onSelect={() => setLanguage(zh ? "en" : "zh-CN")}>{ui.language}</MainMenu.Item>
             <MainMenu.Item onSelect={exportProject}>导出项目备份</MainMenu.Item>
             <MainMenu.Item onSelect={exportScene}>导出 Excalidraw 文件</MainMenu.Item>
+            <MainMenu.Item onSelect={() => window.dispatchEvent(new Event('icn:export'))}>导出 PDF／图片／CAD…</MainMenu.Item>
             <MainMenu.DefaultItems.Export />
             <MainMenu.DefaultItems.SearchMenu />
             <MainMenu.Item onSelect={() => setShortcutSettingsOpen(true)}>{zh ? "快捷键设置" : "Keyboard shortcuts"}</MainMenu.Item>
@@ -2065,19 +2032,20 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
         onTogglePrecision={() => precisionOpen ? closePrecision() : setPrecisionOpen(true)} onClosePrecision={closePrecision}
         precisionTools={precisionOpen && <PrecisionPanel value={precision} change={changePrecision} start={startMeasure}
           section={precisionSection} setSection={setPrecisionSection} editing={precisionEditing} setEditing={setPrecisionEditing}
-          openGuide={openGuide} openGrid={openGrid} toggleAreaFill={toggleAreaFill} />}
+          openGuide={openGuide} openGrid={openGrid} />}
         gridLayer={<PrecisionGridRow value={precision} change={changePrecision}
           settings={() => { setPrecisionOpen(true); setPrecisionSection("grid"); }} edit={() => { if (!precision.gridVisible) openGrid(); setPrecisionEditing("grid"); }} />} />
       <PrecisionOverlay value={precision} viewport={canvasViewport} change={changePrecision} editing={precisionEditing} selected={relationshipOverlayElement} />
+      {measureStatus && measureRef.current?.end && <DimensionPreview session={measureRef.current} viewport={canvasViewport}
+        value={precision} pen={brushKit.pen} />}
       {precision.measure && <output ref={measureOutput} className="precision-selected-measure" hidden />}
       {measureStatus && <div className="precision-status" role="status">{measureStatus}</div>}
       {calibrationLength && <CalibrationDialog length={calibrationLength} unit={precision.unit} close={() => setCalibrationLength(null)}
         apply={scale => { changePrecision({ ...precisionRef.current, scale }); setCalibrationLength(null); }} />}
-      <BrushKit kit={brushKit} zh={zh} areaFill={!!precision.areaFill} toggleAreaFill={toggleAreaFill} />
-      <AreaReadouts apiRef={apiRef} ready={canvasReady} precision={precision} zh={zh} />
+      <BrushKit kit={brushKit} zh={zh} />
       {canvasTools.ui}
-      <CanvasMedia apiRef={apiRef} ready={canvasReady} zh={zh} />
-      <ShapeContext apiRef={apiRef} zh={zh} />
+      <SelectionProperties apiRef={apiRef} layers={layers} kit={brushKit} zh={zh} />
+      <ExportHub apiRef={apiRef} layers={layers} precision={precision} />
       {shortcutSettingsOpen && <ShortcutSettings kit={brushKit} zh={zh} bindings={canvasTools.bindings} setBindings={canvasTools.setBindings} close={() => setShortcutSettingsOpen(false)} />}
       {nudgeEnabled && <><div ref={nudgeCursor} className="nudge-cursor" hidden />
         <svg className="nudge-preview" aria-hidden="true"><path ref={nudgePreview} /></svg></>}
@@ -2092,7 +2060,10 @@ function App({ project, onExit, modelView, navigate, replaceViews, viewsCollapse
         void importImages([...event.target.files], path);
         event.target.value = "";
       }} />
-      <WorkspaceSidebar.Trigger apiRef={apiRef} open={isOpen} zh={zh} />
+      <button className="library-trigger" onClick={() => setIsOpen(open => !open)} aria-expanded={isOpen}
+        title={ui.library} aria-label={ui.library}><LibraryIcon name="grid" /></button>
+      {isOpen && <MaterialPanel library={library} path={path} current={current} ready={libraryReady}
+        error={libraryError} zh={zh} clipboard={libraryClipboard} actionsRef={libraryActions} />}
 
       {selectedRelationshipElement && <span className="relationship-control">
           <button

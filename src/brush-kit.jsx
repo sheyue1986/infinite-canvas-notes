@@ -1,8 +1,5 @@
 import React, { memo, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { CaptureUpdateAction, convertToExcalidrawElements, newElementWith } from "@excalidraw/excalidraw";
-import { watchDiagramPaste } from "../published-site/assets/diagram-editor-r4.js";
-import "../published-site/assets/diagram-editor-r4.css";
 import { imageTint, importStamp, tintImage } from "./paint-engine.js";
 import { brushControlValue, brushDynamics, brushResponse, responseControls, speedPressure, tipControls, vectorBrushStroke } from "./brush-response.js";
 import { BrushPreview } from "./brush-preview.jsx";
@@ -10,15 +7,9 @@ import { defaultFill, fillableShapes, fillPaint, isClosedOutline, readFillPaint,
 import { CanvasSampler, ColorFan, ColorPanel, QuickColors, hexColor, useColors } from "./colors.jsx";
 import { elementOpacity, withElementOpacity } from "./layers.jsx";
 import { defaultDashDensity } from "./line-style.js";
+import { openDiagramEditor } from "./diagram-editor.js";
 import "./brush-kit.css";
-import { basicShapeIcons, basicShapeTools } from "../published-site/assets/basic-shapes-r10.js";
-import { createShapeControls } from "../published-site/assets/shape-controls-r10.js";
-import { chooseCanvasMedia } from "../published-site/assets/canvas-media.js";
-import { createAreaFillUI } from "../published-site/assets/area-fill-ui.js";
-
-const { AreaToggle, PatternButton, PatternOptions } = createAreaFillUI(React);
-
-const { PolygonSides } = createShapeControls(React, createPortal, newElementWith, CaptureUpdateAction.IMMEDIATELY);
+import "./diagram-editor.css";
 
 const brush = (id, name, en, width, opacity, smoothing, dynamics, mark) =>
   ({ id, name, en, width, opacity, smoothing, dynamics, mark, type: "freedraw", color: "#1b1b1f" });
@@ -39,7 +30,6 @@ const tools = [
   { id: "lasso", name: "套索", en: "Lasso", type: "lasso", mark: "lasso" },
   { id: "eraser", name: "对象橡皮", en: "Eraser", type: "eraser", mark: "eraser" },
   { id: "text", name: "文字", en: "Text", type: "text", mark: "text" },
-  { id: "stickyNote", name: "便签", en: "Sticky note", type: "stickyNote", mark: "stickyNote" },
   { id: "pan", name: "平移", en: "Pan", type: "hand", mark: "pan" },
   { id: "line", name: "直线", en: "Line", type: "line", mark: "line" },
   { id: "partial", name: "图片局部擦除", en: "Image eraser", type: "partial", mark: "eraser" },
@@ -48,19 +38,16 @@ const tools = [
   { id: "rectangle", name: "矩形", en: "Rectangle", type: "rectangle", mark: "rectangle" },
   { id: "ellipse", name: "椭圆", en: "Ellipse", type: "ellipse", mark: "ellipse" },
   { id: "diamond", name: "菱形", en: "Diamond", type: "diamond", mark: "diamond" },
-  ...basicShapeTools,
   { id: "arrow", name: "箭头", en: "Arrow", type: "arrow", mark: "arrow" },
   { id: "image", name: "图片", en: "Image", type: "image", mark: "image" },
   { id: "frame", name: "框架", en: "Frame", type: "frame", mark: "rectangle" },
-  { id: "embeddable", name: "嵌入网页", en: "Web embed", type: "embeddable", mark: "embeddable" },
-  brush("drawShape", "绘制成形", "Draw to shape", 2, 100, 35, "fixed", "drawShape"),
   { id: "laser", name: "激光笔", en: "Laser", type: "laser", mark: "wand" },
   { id: "bucket", name: "填充", en: "Bucket fill", type: "bucket", mark: "bucket", tolerance: 32 },
 ];
 const initialSlots = ["pen", "dynamic", "marker", "soft", "eraser", "text", "pan", "select"];
 const directToolKeys = new Map([
   ["z", "magnifier"], ["p", "pen"], ["t", "text"], ["e", "eraser"], ["v", "select"], ["h", "pan"], ["l", "line"],
-  ["r", "rectangle"], ["o", "ellipse"], ["d", "diamond"], ["a", "arrow"], ["f", "frame"], ["k", "laser"], ["b", "bucket"], ["9", "image"], ["n", "stickyNote"],
+  ["r", "rectangle"], ["o", "ellipse"], ["d", "diamond"], ["a", "arrow"], ["f", "frame"], ["k", "laser"], ["b", "bucket"], ["9", "image"],
 ]);
 const toolKeyLabels = new Map([...directToolKeys].map(([key, id]) => [id, key.toUpperCase()]));
 const toolKeyAliases = new Map([
@@ -92,7 +79,6 @@ export const hasLineStyle = type => styled.has(type) && type !== "text";
 const canEditFill = element => !element.customData?.infiniteBucket &&
   (fillableShapes.has(element.type) || supportsClosedFill(element.type) && isClosedOutline(element.points));
 const objectFill = element => readFillPaint(element.backgroundColor, element.customData?.infiniteFillColor);
-const canEditFillPattern = element => (element.customData?.infiniteBucket || canEditFill(element)) && objectFill(element).fillOpacity > 0;
 const elementStyle = {
   color: [element => styled.has(element.type) || element.type === "image", element => element.type === "image" ?
     imageTint(element)?.color ?? element.customData?.infiniteBrush?.color ?? null :
@@ -101,12 +87,11 @@ const elementStyle = {
   opacity: [element => element.type !== "frame" && element.type !== "magicframe", elementOpacity],
   fillColor: [canEditFill, element => objectFill(element).fillColor],
   fillOpacity: [canEditFill, element => objectFill(element).fillOpacity],
-  fillStyle: [canEditFillPattern, element => element.fillStyle || "solid", "fillStyle"],
   fontSize: [element => element.type === "text", element => element.fontSize],
   strokeStyle: [element => hasLineStyle(element.type) && !element.customData?.infiniteBucket, element => element.strokeStyle, "strokeStyle"],
   dashDensity: [element => hasLineStyle(element.type) && !element.customData?.infiniteBucket, element => element.customData?.infiniteDashDensity ?? defaultDashDensity],
 };
-const specialTypes = ["partial", "wand", "nudge", "bucket", "zoom", "lasso", "stickyNote"];
+const specialTypes = ["partial", "wand", "nudge", "bucket", "zoom", "lasso"];
 const nativeType = tool => specialTypes.includes(tool?.type) ? "selection" : tool?.type;
 
 function selectedStyle(elements) {
@@ -120,10 +105,9 @@ function selectedStyle(elements) {
     canRestoreColor: type === "image" && elements.some(imageTint),
     brushId: sameType && elements.every(element => element.customData?.infiniteBrush?.id === brushId) ? brushId : undefined,
     ...Object.fromEntries(Object.entries(elementStyle).flatMap(([property, [supports, read]]) => {
-      const targets = property === "fillStyle" ? elements.filter(supports) : elements;
-      if (!targets.length || !targets.every(supports)) return [];
-      const value = read(targets[0]);
-      return [[property, targets.every(element => read(element) === value) ? value : null]];
+      if (!elements.every(supports)) return [];
+      const value = read(first);
+      return [[property, elements.every(element => read(element) === value) ? value : null]];
     })),
   };
 }
@@ -172,11 +156,8 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
       const pixel = specialTypes.includes(tool.type);
       setActiveSpecial(pixel ? tool.type : null);
       onPixelTool(pixel ? tool.type : null);
-      const type = tool.type === "image" ? "selection" : nativeType(tool);
-      setNative(type);
-      api.setActiveTool({ type });
-      if (tool.type === "image") chooseCanvasMedia(apiRef, convertToExcalidrawElements, CaptureUpdateAction.IMMEDIATELY,
-        document.querySelector(".app-shell")?.lang !== "en");
+      setNative(nativeType(tool));
+      api.setActiveTool({ type: nativeType(tool) });
       if (tool.type === "nudge" || tool.type === "bucket") {
         syncSelection([], tool.type);
         api.updateScene({ appState: { selectedElementIds: {} }, captureUpdate: CaptureUpdateAction.NEVER });
@@ -204,14 +185,13 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
   const activate = (index, openDetails = true) => {
     const old = latest.current;
     const tool = entry(old, old.slots[index], index);
-    if (openDetails && tool && (index === activeSlot || shortcutTool === tool.id)) {
-      if (tool.type === "freedraw") setPanel("brushDetail");
-      else edit(index);
+    if (openDetails && tool?.type !== "freedraw" && !shortcutTool && index === old.slot && index === activeSlot) {
+      edit(index);
       return;
     }
     apply({ ...old, slot: index }, tool, true);
     setEditedSlot(index);
-    setPanel(null);
+    setPanel(openDetails && tool?.type === "freedraw" ? "brushDetail" : null);
   };
   const activateById = id => {
     const old = latest.current;
@@ -225,7 +205,7 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
     const slots = old.slots.map((value, index) => index === editedSlot ? id : value);
     const tool = entry(old, id, editedSlot);
     apply({ ...old, slots, slot: editedSlot }, tool, true);
-    setPanel(null);
+    if (tool?.type === "freedraw") setPanel("brushDetail");
   };
   const setMany = (values, expected) => {
     const api = apiRef.current;
@@ -248,8 +228,8 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
         for (const element of scene.selected) {
           const patch = {};
           for (const [property, value] of updates) {
-            const [supports, read, attribute] = elementStyle[property];
-            if (attribute && supports(element) && !(property === "color" && element.type === "image") && read(element) !== value) {
+            const [, read, attribute] = elementStyle[property];
+            if (attribute && !(property === "color" && element.type === "image") && read(element) !== value) {
               patch[property === "color" && element.customData?.infiniteBucket ? "backgroundColor" : attribute] = value;
             }
             if (property === "dashDensity" && read(element) !== value) patch.customData = { ...element.customData, infiniteDashDensity: value };
@@ -259,6 +239,7 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
             const next = { fillColor: values.fillColor ?? old.fillColor, fillOpacity: values.fillOpacity ?? old.fillOpacity };
             if (next.fillColor !== old.fillColor || next.fillOpacity !== old.fillOpacity) {
               patch.backgroundColor = fillPaint(next);
+              patch.fillStyle = "solid";
               patch.customData = { ...element.customData, ...patch.customData, infiniteFillColor: next.fillColor };
             }
           }
@@ -349,7 +330,6 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
     lineTarget, toggleLineStyle, currentPen, active, shortcutTool, activateById,
     shortcutTools, keyForTool, shortcutForKey, aliasForKey,
     setToolShortcut: (id, value) => apply({ ...latest.current, shortcuts: { ...latest.current.shortcuts, [id]: value } }),
-    replaceToolShortcuts: shortcuts => apply({ ...latest.current, shortcuts }),
     resetToolShortcuts: () => apply({ ...latest.current, shortcuts: {} }),
     nudge: active?.type === "nudge",
     setNudgeRadius: value => apply({ ...latest.current, nudgeRadius: clamp(value, 8, 160) }),
@@ -360,6 +340,7 @@ export function useBrushKit(apiRef, layerState, onPixelTool) {
     },
     applyLast: () => { if (apiRef.current) applyProperties(apiRef.current, mode.current); },
     display: (nextPanel) => { setShown(true); setPanel(panel === nextPanel ? null : nextPanel); },
+    show: () => setShown(true),
     toggle: () => { setShown(!shown); setPanel(null); },
     changeFormat: () => apply({ ...latest.current, format: settings.format === "wheel" ? "bar" : "wheel" }),
     preset: (property, index) => {
@@ -438,7 +419,6 @@ export function finalizeBrush(stroke, profile, pointerType, mutate, release) {
 }
 
 const glyphs = {
-  ...basicShapeIcons,
   pen: "M3 16c5-10 8-10 7-6s1 6 8-1",
   bold: "M3 15c5-10 10-11 8-5s2 5 7-1",
   pencil: "M4 15c4-8 8-11 7-6s1 5 6-1M4 12l3-4",
@@ -466,11 +446,9 @@ const glyphs = {
   width: "M3 7h14M3 13h14",
   opacity: "M10 3a7 7 0 1 0 0 14Zm0 0a7 7 0 1 1 0 14",
   smooth: "m2 12 3-4 3 7 3-10 3 8 4-3",
+  editor: "M5 2.5h7l3 3v12H5zm7 0v4h3M7.5 10h5m-5 3h5",
   undo: "M8 5 3 10l5 5m-5-5h9c4 0 5 2 5 5",
   redo: "m12 5 5 5-5 5m5-5H8c-4 0-5 2-5 5",
-  embeddable: "M7 5 2 10l5 5m6-10 5 5-5 5",
-  drawShape: "M4 4h12v12H4zM6 13l3-3 2 1 3-4",
-  stickyNote: "M4 3h12v9l-5 5H4zM11 17v-5h5M7 7h6m-6 3h3",
 };
 function Glyph({ name, size = 19 }) {
   return <svg width={size} height={size} viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor"
@@ -580,10 +558,7 @@ function sector(index) {
   return `M${point(97, start)}A97 97 0 0 1 ${point(97, end)}L${point(62, end)}A62 62 0 0 0 ${point(62, start)}Z`;
 }
 
-export const BrushKit = memo(function BrushKit({ kit, zh, areaFill, toggleAreaFill }) {
-  useEffect(() => watchDiagramPaste(() => kit.apiRef.current, {
-    zh, convert: convertToExcalidrawElements, capture: CaptureUpdateAction.IMMEDIATELY,
-  }), [kit.apiRef, zh]);
+export const BrushKit = memo(function BrushKit({ kit, zh }) {
   const root = useRef(null);
   const textureInput = useRef(null);
   const presetInput = useRef(null);
@@ -740,17 +715,18 @@ export const BrushKit = memo(function BrushKit({ kit, zh, areaFill, toggleAreaFi
             }} onPointerUp={() => clearTimeout(colorHold.current.timer)} onPointerLeave={() => clearTimeout(colorHold.current.timer)}
             onPointerCancel={() => clearTimeout(colorHold.current.timer)}
             disabled={!hasColor} style={{ "--brush-color": hasColor ? currentColor : "#c6cbc7" }} />
-          {bucketActive && <AreaToggle enabled={areaFill} toggle={toggleAreaFill} zh={zh} compact />}
-          {bucketActive ? <PatternButton kit={kit} zh={zh} /> : <button type="button" className={`brush-color brush-fill-color${hasFill && (target.fillColor === null || target.fillOpacity === null) ? " is-mixed" : ""}`}
+          <button type="button" className={`brush-color brush-fill-color${hasFill && (target.fillColor === null || target.fillOpacity === null) ? " is-mixed" : ""}`}
             disabled={!hasFill} aria-label={t("填充颜色", "Fill color")}
             title={hasFill ? t("填充颜色与不透明度", "Fill color and opacity") : t("当前工具或对象不支持闭合填充", "Fill is unavailable for this tool or object")}
             aria-expanded={panel === "fillFan"} onClick={() => kit.display("fillFan")}
-            style={{ "--brush-color": hasFill ? fillPaint(target) : "transparent" }} />}
+            style={{ "--brush-color": hasFill ? fillPaint(target) : "transparent" }} />
         </div>}
         <div className="brush-actions">
           {kit.shortcutTool && kit.active && !["bucket", "zoom", "lasso"].includes(kit.active.type) &&
-            <button type="button" className="brush-shortcut-tool" title={label(kit.active)}
-              onClick={() => kit.active.type === "freedraw" ? kit.display("brushDetail") : kit.edit()}>{label(kit.active)}</button>}
+            <span className="brush-shortcut-tool" title={label(kit.active)}>{label(kit.active)}</span>}
+          {iconButton("editor", t("编辑器", "Editor"), () => openDiagramEditor({
+            api: kit.apiRef.current, zh, convert: convertToExcalidrawElements, capture: CaptureUpdateAction,
+          }))}
           {iconButton("undo", t("撤销", "Undo"), () => document.querySelector(".excalidraw [data-testid='button-undo']")?.click())}
           {iconButton("redo", t("重做", "Redo"), () => document.querySelector(".excalidraw [data-testid='button-redo']")?.click())}
           <button type="button" aria-expanded={canvasToolsOpen} aria-label={t("画布工具", "Canvas tools")}
@@ -775,12 +751,11 @@ export const BrushKit = memo(function BrushKit({ kit, zh, areaFill, toggleAreaFi
         <button type="button" aria-pressed={panel === "color"} disabled={!!selection && !hasColor} onClick={() => kit.setPanel("color")}>{t("颜色", "Colors")}</button>
         {fillMode && <button type="button" aria-pressed="true" onClick={() => kit.setPanel("fillFan")}>{t("填充色轮", "Fill wheel")}</button>}
         {selection && panel !== "library" && !fillMode && <>
-          <button type="button" aria-pressed={panel === "native"} onClick={() => kit.setPanel("native")}>{t("原生样式", "Native styles")}</button>
           <button type="button" aria-pressed={panel === "dimensions"} onClick={() => kit.setPanel("dimensions")}>{t("尺寸与位置", "Size & position")}</button>
         </>}
         {(!selection || panel === "library") && <button type="button" className="brush-layout" onClick={kit.changeFormat}>{settings.format === "wheel" ? t("工具栏", "Toolbar") : t("工具轮", "Wheel")}</button>}</header>
       {selection && panel !== "library" && !nativePanel && <div className="brush-selection-label">{selectionName}</div>}
-      {!nativePanel && (panel === "fillPattern" ? bucketActive && <PatternOptions kit={kit} zh={zh} /> : panel === "fillPalette" ? hasFill && <>
+      {!nativePanel && (panel === "fillPalette" ? hasFill && <>
         <FillOpacity key={selection?.key ?? `${kit.activeSlot}:${pen.id}`} {...{ target, kit, zh }} />
         <ColorPanel colors={colors} color={fillColor} choose={chooseFill} chooseCopic={async color => {
           await chooseFill(color);
@@ -816,7 +791,6 @@ export const BrushKit = memo(function BrushKit({ kit, zh, areaFill, toggleAreaFi
         {panel === "library" && <>
           <section><h3>{t("基础笔刷", "Basic brushes")}</h3>{cards(basics)}</section>
           <section><h3>{t("工具", "Tools")}</h3>{cards(tools)}</section>
-          {(pen?.id === "polygon" || settings.slots[kit.editedSlot] === "polygon") && <PolygonSides zh={zh} />}
           <section><h3>{t("我的笔刷", "My brushes")}</h3>{cards(settings.custom)}</section>
         </>}
         {(panel === "library" || brushDetail) && <section>
@@ -871,10 +845,6 @@ export const BrushKit = memo(function BrushKit({ kit, zh, areaFill, toggleAreaFi
         {selection && panel === "selection" && hasFill && <div className="brush-property brush-fill">
           <button type="button" onClick={() => kit.setPanel("fillFan")}>{t("填充颜色与不透明度", "Fill color and opacity")}</button>
         </div>}
-        {selection && panel === "selection" && Object.hasOwn(selection, "fillStyle") && <div className="brush-property">
-          <span>{t("填充图案", "Fill pattern")}</span>
-          <PatternOptions kit={kit} zh={zh} />
-        </div>}
         {panel === "library" && <><details className="brush-shortcuts"><summary>{t("快捷键", "Shortcuts")}</summary>
           <small>{t("工具按键可在主菜单的「快捷键设置」中修改。", "Change tool bindings in Keyboard shortcuts in the main menu.")}</small>
           <dl>{[["Alt+1–8", "选择工具槽", "Select a slot"], ["Alt+L", "切换实线／虚线", "Toggle solid / dashed"],
@@ -890,6 +860,6 @@ export const BrushKit = memo(function BrushKit({ kit, zh, areaFill, toggleAreaFi
         if (value && await kit.setMany(sampleRequest.fill ? fillValues(value.color, value.opacity) : value, sampleRequest)) colors.remember(value.color);
       }} />}
   </div>;
-}, (a, b) => a.zh === b.zh && a.areaFill === b.areaFill && a.kit.settings === b.kit.settings && a.kit.panel === b.kit.panel &&
+}, (a, b) => a.zh === b.zh && a.kit.settings === b.kit.settings && a.kit.panel === b.kit.panel &&
   a.kit.shown === b.kit.shown && a.kit.editedSlot === b.kit.editedSlot && a.kit.activeSlot === b.kit.activeSlot &&
   a.kit.selection === b.kit.selection && a.kit.shortcutTool === b.kit.shortcutTool);

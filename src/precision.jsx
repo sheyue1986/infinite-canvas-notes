@@ -1,9 +1,38 @@
 import React, { useEffect, useRef, useState } from "react";
-import { gridTypes, guides, measured, perspectiveCount, guidePath, unitMeters, midpoint, rotatePoint } from "./precision-engine.js";
+import { dimensionLayout, gridTypes, guides, measured, perspectiveCount, guidePath, unitMeters, midpoint, rotatePoint, gridSpacing, mapMetersPerPoint } from "./precision-engine.js";
 import "./precision.css";
-import { createAreaFillUI } from "../published-site/assets/area-fill-ui.js";
 
-const { AreaToggle } = createAreaFillUI(React);
+export function DimensionPreview({ session, viewport, value, pen }) {
+  const [cursor, setCursor] = useState(null);
+  useEffect(() => {
+    const move = event => {
+      if (event.target.closest?.("canvas.interactive")) setCursor([event.clientX, event.clientY]);
+    };
+    window.addEventListener("pointermove", move);
+    return () => window.removeEventListener("pointermove", move);
+  }, []);
+  if (!viewport) return null;
+  const { zoom, offsetLeft, offsetTop, scrollX, scrollY } = viewport;
+  const project = ([x, y]) => [(x + scrollX) * zoom + offsetLeft, (y + scrollY) * zoom + offsetTop];
+  const position = cursor ? [(cursor[0] - offsetLeft) / zoom - scrollX, (cursor[1] - offsetTop) / zoom - scrollY] : session.end;
+  const text = measured(Math.hypot(session.end[0] - session.start[0], session.end[1] - session.start[1]), value);
+  const layout = dimensionLayout(session.start, session.end, position, zoom, text.length * 9 / zoom);
+  const color = pen?.color || "#7656ad", width = (pen?.width || 2) * zoom;
+  const segment = (points, i, strokeWidth, strokeDasharray) => {
+    const [[x1, y1], [x2, y2]] = points.map(project);
+    return <line key={i} {...{ x1, y1, x2, y2, strokeWidth, strokeDasharray }} />;
+  };
+  const [x, y] = project(layout.label);
+  return <svg className="precise-line-preview" aria-hidden="true">
+    <g stroke={color} opacity={(pen?.opacity ?? 100) / 100}>
+      {layout.lines.map((line, i) => segment(line, i, width, pen?.strokeStyle === "dashed" ? "6 4" : pen?.strokeStyle === "dotted" ? "2 4" : undefined))}
+      {layout.extensions.map((line, i) => segment(line, i, width * .7))}
+      {layout.ticks.map((line, i) => segment(line, i, Math.max(2 * zoom, width * 1.65)))}
+      <text x={x} y={y} transform={`rotate(${layout.angle * 180 / Math.PI} ${x} ${y})`} textAnchor="middle"
+        dominantBaseline="central" fontFamily="Helvetica, Arial, sans-serif" fontSize="16" stroke="none" fill={color}>{text}</text>
+    </g>
+  </svg>;
+}
 
 const fields = [
   ["grid", "网格", value => gridTypes[value.gridType]],
@@ -13,10 +42,12 @@ const fields = [
   ["recognize", "识别", value => value.hold / 1000 + " 秒"],
 ];
 
-export function PrecisionPanel({ value, change, start, section, setSection, editing, setEditing, openGuide, openGrid, toggleAreaFill }) {
+export function PrecisionPanel({ value, change, start, section, setSection, editing, setEditing, openGuide, openGrid }) {
   const patch = changes => change({ ...value, ...changes });
   const mapScale = value.mapScale?.metersPerPoint / unitMeters[value.unit];
   const hasMapScale = Number.isFinite(mapScale) && mapScale > 0;
+  const mapMeters = mapMetersPerPoint(value);
+  const intervalMeters = mapMeters && gridSpacing(value) * mapMeters;
   const usingMapScale = hasMapScale && Math.abs((value.scale ?? 0) / mapScale - 1) < 1e-8;
   const numeric = (label, key, min, max, step = 1) => <label>{label}<input type="number" min={min} max={max} step={step}
     key={value[key]} defaultValue={value[key]} onBlur={event => {
@@ -38,10 +69,27 @@ export function PrecisionPanel({ value, change, start, section, setSection, edit
     </div>)}</div>
     {section && <div className="precision-config" aria-label={fields.find(([key]) => key === section)[1] + "设置"}>
       {section === "grid" && <>
+        {mapMeters && <>
+          <div className="precision-map-presets" aria-label="地图大网格预设">
+            {[5, 10, 15].map(meters => <button key={meters} type="button"
+              aria-pressed={value.grid && value.gridVisible && value.gridType === "square" && value.mapGridMeters === meters}
+              onClick={() => patch({ mapGridMeters: meters, grid: true, gridVisible: true, gridType: "square",
+                gridPlaced: true, origin: value.gridPlaced ? value.origin : [0, 0], divisions: 1, angle: value.mapScale?.north || 0 })}>{meters} m</button>)}
+          </div>
+          <label>大网格间距 · m<input type="number" min="0.01" max="1000000" step="any" aria-label="地图大网格间距"
+            key={intervalMeters} defaultValue={Number(intervalMeters.toPrecision(8))}
+            onBlur={event => {
+              const meters = event.target.valueAsNumber;
+              if (Number.isFinite(meters) && meters >= 0.01 && meters <= 1000000) {
+                if (meters !== intervalMeters || !value.mapGridMeters) patch({ mapGridMeters: meters });
+              } else event.target.value = Number(intervalMeters.toPrecision(8));
+            }} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); }} /></label>
+          <small>按底图的米数换算。细分只影响小格。</small>
+        </>}
         {select("类型", "gridType", gridTypes)}
         {perspectiveCount(value.gridType) ? numeric("密度", "density", 4, 32) : <>
-          {numeric("间距 · pt", "spacing", 8, 1000)}
-          {value.scale && <label>实地间距 · {value.unit}<input type="number" min={8 * value.scale} max={1000 * value.scale} step="any"
+          {!mapMeters && numeric("间距 · pt", "spacing", 8, 1000)}
+          {!mapMeters && value.scale && <label>实地间距 · {value.unit}<input type="number" min={8 * value.scale} max={1000 * value.scale} step="any"
             key={value.spacing + ":" + value.scale} defaultValue={Number((value.spacing * value.scale).toPrecision(8))}
             onBlur={event => {
               const interval = event.target.valueAsNumber / value.scale;
@@ -75,12 +123,11 @@ export function PrecisionPanel({ value, change, start, section, setSection, edit
         }}><option value="">选择 1:n</option>{[1, 10, 20, 50, 100, 200, 500].map(ratio => <option key={ratio} value={ratio}>1:{ratio}</option>)}</select></label>
         <small>{value.scale ? "100 pt = " + measured(100, value) : "比例未校准，使用画布点数"}</small>
         {hasMapScale && <small>{usingMapScale
-          ? value.mapScale.source === "street" ? "地图比例 · 按取景中心纬度换算" : "影像比例 · 按输入的实地宽度换算"
+          ? value.mapScale.source === "local" ? "影像比例 · 按输入的实地宽度换算" : "地图比例 · 按取景中心纬度换算"
           : "当前使用修改后的比例，可恢复创建底图时的换算。"}</small>}
         {hasMapScale && !usingMapScale && <button onClick={() => patch({ scale: mapScale })}>恢复底图比例</button>}
         <button onClick={() => start("calibrate")}>两点校准比例</button>
         <button onClick={() => start("measure")}>标注长度</button>
-        <AreaToggle enabled={value.areaFill} toggle={toggleAreaFill} />
         {value.scale && <button onClick={() => patch({ scale: null })}>重置比例</button>}
       </>}
       {section === "guide" && <>
@@ -120,7 +167,7 @@ export function PrecisionGridRow({ value, change, settings, edit }) {
   const label = value.gridVisible ? "隐藏网格图层" : "显示网格图层";
   return <div className="precision-grid-row">
     <button aria-label={label} title={label} onClick={() => change({ ...value, gridVisible: !value.gridVisible })}>{value.gridVisible ? "◉" : "○"}</button>
-    <button onClick={settings} onDoubleClick={edit}><b>网格</b><small>{gridTypes[value.gridType]} · {value.gridOpacity}%</small></button>
+    <button onClick={settings} onDoubleClick={edit}><b>网格</b><small>{gridTypes[value.gridType]} · {mapMetersPerPoint(value) && !perspectiveCount(value.gridType) ? Number((gridSpacing(value) * mapMetersPerPoint(value)).toPrecision(5)) + " m" : value.gridOpacity + "%"}</small></button>
     <button aria-label="网格图层设置" title="网格图层设置" onClick={settings}>⋯</button>
   </div>;
 }
@@ -157,7 +204,8 @@ function drawGrid(canvas, v, value) {
     ctx.stroke();
     return;
   }
-  const realStep = value.spacing * v.zoom / value.divisions;
+  const realStep = gridSpacing(value) * v.zoom / value.divisions;
+  if (!(realStep >= 1e-9 && Number.isFinite(realStep))) return;
   const step = realStep * Math.max(1, Math.ceil(8 / realStep));
   const diagonal = Math.hypot(w, h);
   const c = Math.cos(rotation), s = Math.sin(rotation);
@@ -188,13 +236,17 @@ function drawGrid(canvas, v, value) {
   const families = value.gridType === "lines" ? [0] : triangular ? (value.gridType === "iso" ? [Math.PI / 6, Math.PI / 2, Math.PI * 5 / 6] : [0, Math.PI / 3, -Math.PI / 3]) : [0, Math.PI / 2];
   families.forEach(angle => {
     const shift = my * Math.cos(angle) - mx * Math.sin(angle);
-    const spacing = triangular ? step * Math.sqrt(3) / 2 : step;
+    const spacing = realStep * (triangular ? Math.sqrt(3) / 2 : 1);
     ctx.save();
     ctx.rotate(angle);
     for (const major of [false, true]) {
       ctx.globalAlpha = value.gridOpacity / 100 * (major ? 1 : .38);
       ctx.beginPath();
-      for (let i = Math.floor((shift - diagonal) / spacing); i <= Math.ceil((shift + diagonal) / spacing); i++) {
+      if (!major && spacing < 8) continue;
+      const stride = major ? value.divisions * Math.max(1, Math.ceil(8 / (spacing * value.divisions))) : 1;
+      const first = Math.floor((shift - diagonal) / (spacing * stride)) * stride;
+      const last = Math.ceil((shift + diagonal) / spacing);
+      for (let i = first; i <= last; i += stride) {
         if ((i % value.divisions === 0) !== major) continue;
         const y = i * spacing - shift;
         line(-diagonal, y, diagonal, y);

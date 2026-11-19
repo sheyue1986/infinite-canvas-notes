@@ -8,6 +8,15 @@ export const defaults = {
   density: 12, origin: [0, 0], vanishing: null, snap: false, gridSnap: false, alignGrid: false, measure: false, scale: null, unit: "m", digits: 2,
   guide: false, guideType: "line", guidePoints: null, guideRotation: 0, recognize: false, hold: 500,
 };
+export const mapMetersPerPoint = value => {
+  const scale = value.mapScale?.metersPerPoint;
+  return Number.isFinite(scale) && scale > 0 ? scale : null;
+};
+export const gridSpacing = value => {
+  const mapScale = mapMetersPerPoint(value);
+  const spacing = value.mapGridMeters / mapScale;
+  return mapScale && Number.isFinite(spacing) && spacing > 0 ? spacing : Math.max(4, value.spacing);
+};
 export const unitMeters = { mm: .001, cm: .01, m: 1, km: 1000, in: .0254, ft: .3048 };
 const distance = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 export const perspectiveCount = type => ({ one: 1, two: 2, three: 3 }[type] || 0);
@@ -21,7 +30,26 @@ export function measured(value, settings, power = 1) {
   return number + " " + (settings.scale ? settings.unit : "pt") + (power === 2 ? "²" : "");
 }
 
-export function measureAt(event, api, session, settings, revealLayer) {
+export function dimensionLayout(start, end, cursor, zoom, labelWidth) {
+  if (end[0] < start[0] || end[0] === start[0] && end[1] > start[1]) [start, end] = [end, start];
+  const length = distance(start, end);
+  const ux = (end[0] - start[0]) / length, uy = (end[1] - start[1]) / length;
+  const step = (point, along, across) => [point[0] + ux * along - uy * across, point[1] + uy * along + ux * across];
+  const offset = (cursor[1] - start[1]) * ux - (cursor[0] - start[0]) * uy || -24 / zoom;
+  const side = Math.sign(offset);
+  const a = step(start, 0, offset), b = step(end, 0, offset);
+  const gap = labelWidth / 2 + 6 / zoom;
+  const hasGap = length / 2 > gap + 7 / zoom;
+  const lines = hasGap ? [[a, step(a, length / 2 - gap, 0)], [step(a, length / 2 + gap, 0), b]] : [[a, b]];
+  const extensions = [[start, a], [end, b]].map(([anchor, point]) => [
+    step(anchor, 0, side * Math.min(Math.abs(offset) / 2, 3 / zoom)), step(point, 0, side * 8 / zoom),
+  ]);
+  const tick = 5 / zoom;
+  const ticks = [a, b].map(point => [step(point, -tick, tick), step(point, tick, -tick)]);
+  return { lines, extensions, ticks, label: step(a, length / 2, hasGap ? 0 : side * 14 / zoom), angle: Math.atan2(uy, ux) };
+}
+
+export function measureAt(event, api, session, settings, revealLayer, pen) {
   if (!api || !session.current) return;
   const point = viewportCoordsToSceneCoords(event, api.getAppState());
   const position = settings.snap && settings.grid && settings.gridVisible && settings.gridSnap ? snapPoint([point.x, point.y], settings) : [point.x, point.y];
@@ -31,22 +59,38 @@ export function measureAt(event, api, session, settings, revealLayer) {
     action.status("再点击终点，Esc 取消");
     return;
   }
-  const start = action.start;
-  const length = distance(position, start);
-  if (!length) { action.status("请选择与起点不同的终点"); return; }
+  if (!action.end && !distance(position, action.start)) { action.status("请选择与起点不同的终点"); return; }
+  if (action.kind === "measure" && !action.end) {
+    action.end = position;
+    action.status("点击放置尺寸线，Esc 取消");
+    return;
+  }
   session.current = null;
   action.status("");
   if (action.kind === "calibrate") {
-    action.calibrate(length);
+    action.calibrate(distance(position, action.start));
     return;
   }
   revealLayer();
-  const [x, y] = start, [endX, endY] = position;
+  const state = api.getAppState();
+  const zoom = state.zoom.value;
+  const strokeColor = state.currentItemStrokeColor, strokeWidth = state.currentItemStrokeWidth;
+  const opacity = state.currentItemOpacity;
+  const [label] = convertToExcalidrawElements([{ type: "text", x: 0, y: 0, fontSize: 16 / zoom, fontFamily: 2,
+    text: measured(distance(action.start, action.end), settings), strokeColor, opacity }]);
+  const layout = dimensionLayout(action.start, action.end, [point.x, point.y], zoom, label.width);
+  const line = ([[x, y], [endX, endY]], width, style) => ({ type: "line", x, y, points: [[0, 0], [endX - x, endY - y]],
+    roughness: 0, strokeColor, strokeWidth: width, opacity, strokeStyle: style });
   const group = crypto.randomUUID();
-  const elements = convertToExcalidrawElements([
-    { type: "line", x, y, points: [[0, 0], [endX - x, endY - y]], roughness: 0, strokeColor: "#7656ad" },
-    { type: "text", x: (x + endX) / 2 + 8, y: (y + endY) / 2 - 24, text: measured(length, settings), fontSize: 16, strokeColor: "#7656ad" },
-  ]).map(element => newElementWith(element, { groupIds: [group], customData: { infiniteLayer: MEASURE_LAYER, precisionMeasure: true } }));
+  const lines = convertToExcalidrawElements([
+    ...layout.lines.map(segment => line(segment, strokeWidth, state.currentItemStrokeStyle)),
+    ...layout.extensions.map(segment => line(segment, Math.max(.5, strokeWidth * .7), "solid")),
+    ...layout.ticks.map(segment => line(segment, Math.max(2, strokeWidth * 1.65), "solid")),
+  ]);
+  const elements = [...lines, newElementWith(label, { x: layout.label[0] - label.width / 2, y: layout.label[1] - label.height / 2,
+    angle: layout.angle })].map(element => newElementWith(element, { groupIds: [group], customData: {
+      infiniteLayer: MEASURE_LAYER, precisionMeasure: true, ...(element.strokeStyle === "dashed" && { infiniteDashDensity: pen?.dashDensity }),
+    } }));
   api.updateScene({ elements: [...api.getSceneElementsIncludingDeleted(), ...elements], captureUpdate: CaptureUpdateAction.IMMEDIATELY });
 }
 
@@ -54,7 +98,7 @@ export function snapPoint(point, settings) {
   const angle = (settings.angle + (settings.gridType === "iso" ? 30 : 0)) * Math.PI / 180, c = Math.cos(angle), s = Math.sin(angle);
   const [ox, oy] = settings.origin, dx = point[0] - ox, dy = point[1] - oy;
   const x = dx * c + dy * s, y = dy * c - dx * s;
-  const step = Math.max(4, settings.spacing) / Math.max(1, settings.divisions);
+  const step = gridSpacing(settings) / Math.max(1, settings.divisions);
   let sx = x, sy = y;
   if (["iso", "triangle"].includes(settings.gridType)) {
     sy = Math.round(y / (step * Math.sqrt(3) / 2)) * step * Math.sqrt(3) / 2;

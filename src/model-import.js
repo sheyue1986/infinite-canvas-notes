@@ -89,7 +89,7 @@ export async function loadModel(files, signal) {
       let data;
       let metersPerUnit = 1;
       if (format === "blend" || format === "skp") {
-        if (location.origin !== "http://127.0.0.1:4173") throw new Error("windows-native");
+        if (location.protocol !== "http:" || location.hostname !== "127.0.0.1") throw new Error("windows-native");
         const response = await fetch(format === "skp" ? "/api/models/sketchup" : "/api/models/blender", {
           method: "POST", signal,
           headers: { "Content-Type": "application/octet-stream", "X-Infinite-Canvas-Import": format },

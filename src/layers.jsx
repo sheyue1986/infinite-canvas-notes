@@ -134,6 +134,13 @@ export function useLayers(project, apiRef, brushRef) {
       const api = apiRef.current;
       if (!api) return;
       const all = current();
+      const files = api.getFiles();
+      // Native import and paste finish updating the original image after reading the file.
+      if (all.some(element => element.type === "image" && !element.isDeleted && !known.current.has(element.id) &&
+        (!element.fileId || !files[element.fileId] || element.id === api.getAppState().pendingImageElementId))) {
+        lastElements.current = null;
+        return;
+      }
       const next = { ...state.current, items: [...state.current.items] };
       const ids = new Map(next.items.map(layer => [layer.id, layer]));
       const objectLayers = new Map();
@@ -146,8 +153,7 @@ export function useLayers(project, apiRef, brushRef) {
         if (owned && next.mode === "auto" && !owned.archived && owned.visible && !owned.locked && !next.focus) return element;
         let target = ids.get(next.focus || next.active);
         if (next.mode === "auto" && !next.focus) {
-          const name = element.customData?.icnBasicShape ? "图形" :
-            element.customData?.infiniteBrush?.name || (element.type === "freedraw" ? brushRef.current : names[element.type] || "图形");
+          const name = element.customData?.infiniteBrush?.name || (element.type === "freedraw" ? brushRef.current : names[element.type] || "图形");
           const key = element.groupIds?.at(-1) || element.frameId || element.containerId || element.id;
           target = objectLayers.get(key) || next.items.find(item => item.tool === name && item.visible && !item.locked && !item.archived);
           if (!target) {

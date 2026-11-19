@@ -52,3 +52,6 @@
 @media (max-width: 450px) {
   .wheel-only.app-shell:has(.brush-wheel) .layer-panel { left: auto; right: 8px; width: min(185px, 45vw); }
 }
+.precision-map-presets { display: flex; gap: 4px; }
+.precision-map-presets button { flex: 1; }
+.precision-map-presets button[aria-pressed="true"] { background: #eae4fa; color: #412775; border-color: #c8b9e9; }

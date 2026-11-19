@@ -1,4 +1,4 @@
-import { gridTypes, guides, unitMeters } from "./precision-engine.js";
+import { gridTypes, guides, unitMeters, gridSpacing, mapMetersPerPoint } from "./precision-engine.js";
 
 const grids = { dots: "Dots", square: "Square", lines: "Ruled", iso: "Isometric", triangle: "Triangular", one: "One-point perspective", two: "Two-point perspective", three: "Three-point perspective" };
 const guideNames = { line: "Line", arc: "Arc", angle: "Angle", ellipse: "Ellipse", rect: "Rectangle" };
@@ -31,7 +31,7 @@ const panels = [
 
 export const precisionCommands = [
   ["precisionPanel", "打开／关闭精准工具", "Toggle precision tools"],
-  ["precisionGrid", "网格", "Toggle grid"],
+  ["precisionGrid", "网格", "Toggle grid", "Ctrl+Quote"],
   ["precisionGridVisible", "显示／隐藏网格图层", "Show / hide grid layer"],
   ["precisionGuide", "辅助线", "Toggle guide"],
   ["precisionGridEdit", "编辑网格控制点", "Edit grid handles"],
@@ -80,7 +80,12 @@ export function makePrecisionCommands({ current, change, openGrid, openGuide, op
     ...Object.fromEntries(ratios.map(ratio => ["precisionScale." + ratio, () => patch({ scale: ratio * .0254 / 96 / unitMeters[current.current.unit] })])),
     ...Object.fromEntries(Object.entries(fields).flatMap(([key, [, , step, min, max]]) => [-1, 1].map(direction => [
       (direction === 1 ? "precisionIncrease." : "precisionDecrease.") + key,
-      () => patch({ [key]: Math.min(max, Math.max(min, current.current[key] + direction * step)) }),
+      () => {
+        const value = current.current;
+        const mapScale = key === "spacing" && mapMetersPerPoint(value);
+        if (mapScale) patch({ mapGridMeters: Math.min(1000000, Math.max(0.01, gridSpacing(value) * mapScale + direction * 5)) });
+        else patch({ [key]: Math.min(max, Math.max(min, value[key] + direction * step)) });
+      },
     ]))),
   };
 }
