@@ -3,11 +3,15 @@ import { canUnion, mergeSelection } from "./boolean-geometry.js";
 import { canvasBusy } from './canvas-activity.js';
 import { createToolPreferences } from './tool-preferences.js';
 import { createImageTracing } from './image-to-lines.js';
+import { createAdvancedEditing } from './advanced-editing.js';
+import { createCopicPicker } from './copic-picker.js';
 
-export function createSelectionProperties(React, portal, revise, convert, capture) {
+export function createSelectionProperties(React, portal, revise, convert, capture, render, ColorFan) {
   const { createElement: h, useEffect, useRef, useState } = React;
   const ObjectPropertyRing = createObjectPropertyRing(React, revise, convert, capture);
   const ImageTracing=createImageTracing(React,portal,convert,revise,capture);
+  const AdvancedEditing=createAdvancedEditing(React,revise,convert,capture,render);
+  const CopicPicker=createCopicPicker(React,portal,ColorFan);
   const endpoint = (arrow, end) => {
     const p = end === "start" ? arrow.points[0] : arrow.points.at(-1);
     const cx = arrow.width / 2, cy = arrow.height / 2;
@@ -217,6 +221,8 @@ export function createSelectionProperties(React, portal, revise, convert, captur
       });
     }
     return h(React.Fragment, null,
+      h(CopicPicker),
+      h(AdvancedEditing,{api,kit,layers}),
       h(ImageTracing,{api,selected,context}),
       !!selected.length && tools && portal(picker(), tools),
       mergeable && tools && portal(h("button", { type: "button", className: "icn-boolean-merge",

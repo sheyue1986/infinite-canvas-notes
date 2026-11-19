@@ -11,6 +11,10 @@ const required = [
   "index-icn-selection-r15.js", "index-icn-local-021.js", "index-icn-local-021.css", "index-m-qtGE-1.js",
   "workspace-sidebar.css", "ai-generation-r9.css", "shape-controls-r9.css", "canvas-workflow.css",
   "area-fill.css", "selection-properties.css", "export-hub.css",
+  "advanced-editing.js",
+  "erase-geometry.js",
+  "cutout-styles.js",
+  "copic-picker.js",
   // Workspace, tools and panels loaded on demand by the running application.
   "workspace-sidebar-r10.js", "workspace-sidebar-pdf.js", "drawing-tools-r10.js", "drawing-tools.js",
   "basic-shapes-r10.js", "basic-shapes-union.js", "shape-controls-r10.js", "shape-controls-r9.css",

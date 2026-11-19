@@ -1,4 +1,6 @@
 import { propertyOptionIcon } from "./property-icons.js";
+import { isCutout, edgeStyle, applyCutoutStyle } from './cutout-styles.js';
+import { openCopicPicker } from './copic-picker.js';
 
 const symbols = {
   width: "≡", strokeStyle: "┄", roughness: "∿", roundness: "╭", fillStyle: "▧",
@@ -21,7 +23,7 @@ export function createObjectPropertyRing(React, revise, convert, capture) {
     const all = test => selected.length > 0 && selected.every(test);
     const textFor = e => e.type === "text" ? e : api.getSceneElements().find(x =>
       x.type === "text" && !x.isDeleted && x.containerId === e.id);
-    const vector = e => ["rectangle", "diamond", "ellipse", "line", "arrow", "freedraw"].includes(e.type);
+    const vector = e => ["rectangle", "diamond", "ellipse", "line", "arrow", "freedraw"].includes(e.type) || !defaults && isCutout(e);
     const closed = e => ["rectangle", "diamond", "ellipse"].includes(e.type) ||
       e.type === "freedraw" && e.customData?.infiniteFillColor ||
       e.type === "line" && e.points.length > 2 && Math.hypot(...e.points.at(-1)) < 1;
@@ -58,6 +60,7 @@ export function createObjectPropertyRing(React, revise, convert, capture) {
     }, []);
 
     const read = (e, field) => {
+      if(!defaults&&isCutout(e)&&['strokeColor','strokeWidth','strokeStyle','roughness'].includes(field))return edgeStyle(api,e)[field];
       if(defaults&&field==='arrowType')return api.getAppState().currentItemArrowType;
       if(defaults&&['smoothing','dashDensity'].includes(field))return kit.pen?.[field]??0;
       if (field === "arrowType") return e.elbowed ? "elbow" : e.roundness ? "round" : "sharp";
@@ -73,6 +76,7 @@ export function createObjectPropertyRing(React, revise, convert, capture) {
       if (api.getAppState().viewModeEnabled) return;
       if(field==='brushSettings'){kit.setPanel('brushDetail');setOpen(null);return;}
       if(defaults){if(['smoothing','dashDensity'].includes(field)){kit.setMany({[field]:value});return;}preferences.set(api,kit,field,value);return;}
+      if(['strokeColor','strokeWidth','strokeStyle','roughness'].includes(field)&&applyCutoutStyle(api,selected,{[field]:value},revise,convert,capture.IMMEDIATELY))return;
       preferences?.rememberSelected(selected,field,value);
       if (field === "arrowType") {
         // Use Excalidraw's action so elbow routing and existing bindings stay valid.
@@ -122,14 +126,13 @@ export function createObjectPropertyRing(React, revise, convert, capture) {
           }, onKeyDown: e => { e.stopPropagation(); if (e.key === "Enter") e.currentTarget.blur(); },
         }));
     }
-    const fill = spec?.[5] === "color";
-    const strokeAllowed = all(e => !["image", "frame", "magicframe", "embeddable"].includes(e.type));
+    const strokeAllowed = all(e => isCutout(e)||!["image", "frame", "magicframe", "embeddable"].includes(e.type));
     const controls = specs.map((item, index) => {
       const angle = (index / specs.length * 360 - 90) * Math.PI / 180;
       return h("button", { key: item[0], type: "button", className: "icn-ring-property",
         style: { left: 62 + Math.cos(angle) * 47, top: 62 + Math.sin(angle) * 47 },
         title: t(item[1], item[2]), "aria-label": t(item[1], item[2]), "aria-expanded": open === item[0],
-        onClick: () => item[5] === "action" ? apply(item[4]) : setOpen(open === item[0] ? null : item[0]),
+        onClick: event => item[5] === "color" ? openCopicPicker({title:t(item[1],item[2]),value:shared(item[4]),allowTransparent:true,anchor:event.currentTarget,choose:value=>apply(item[4],value)}) : item[5] === "action" ? apply(item[4]) : setOpen(open === item[0] ? null : item[0]),
       }, item[0] === "fillColor" ? h("span", { className: "icn-ring-swatch", style: { background: shared("backgroundColor") || "transparent" } })
         : symbols[item[0]]||'⚙');
     });
@@ -137,20 +140,13 @@ export function createObjectPropertyRing(React, revise, convert, capture) {
       h("div", { className: "icn-ring-controls", role: "group", "aria-label": t("对象圆盘属性", "Object wheel properties") }, controls),
       strokeAllowed && h("button", { type: "button", className: "icn-ring-stroke", "aria-label": t("描边颜色", "Stroke color"),
         title: t("描边颜色", "Stroke color"), style: { background: shared("strokeColor") || "#d1c9dd" },
-        onClick: () => defaults ? setOpen('strokeColor') : kit.display("fan") }),
-      open==='strokeColor'&&defaults&&h('aside',{className:'icn-ring-popover'},h('header',null,t('描边颜色','Stroke color'),h('button',{onClick:()=>setOpen(null)},'×')),h('input',{type:'color','aria-label':t('工具描边颜色','Tool stroke color'),value:shared('strokeColor')||'#1b1b1f',onChange:e=>apply('strokeColor',e.target.value)})),
+        onClick: event => openCopicPicker({title:t('描边颜色','Stroke color'),value:shared('strokeColor'),anchor:event.currentTarget,choose:value=>apply('strokeColor',value)}) }),
       spec && h("aside", { className: "icn-ring-popover", "aria-label": t(spec[1], spec[2]) },
         h("header", null, t(spec[1], spec[2]), h("button", { type: "button", onClick: () => setOpen(null), "aria-label": t("关闭属性", "Close property") }, "×")),
         spec[5] === "choice" && h("div", { className: "icn-ring-choices" }, spec[6].map(([value, cn, en]) =>
           h("button", { key: String(value), type: "button", "aria-pressed": shared(spec[4]) === value,
             onClick: () => apply(spec[4], value) }, propertyOptionIcon(h, spec[4], value), h("span", null, t(cn, en))))),
         ['number','brush'].includes(spec[5]) && numberInput(spec[4], t(spec[1], spec[2]), ...spec[6]),
-        fill && h("div", { className: "icn-ring-colors" },
-          ["transparent", "#ffffff", "#1b1b1f", "#e03131", "#2f9e44", "#1971c2", "#f08c00"].map(color =>
-            h("button", { key: color, title: color, type: "button", style: { background: color },
-              "aria-label": color, onClick: () => apply("backgroundColor", color) })),
-          h("input", { type: "color", "aria-label": t("自定义填充色", "Custom fill"),
-            onChange: e => apply("backgroundColor", e.target.value) })),
         spec[5] === "geometry" && ["x", "y", "width", "height", "angle"].map((field, i) =>
           numberInput(field, [t("位置 X", "Position X"), t("位置 Y", "Position Y"), t("宽度", "Width"), t("高度", "Height"), t("旋转角度", "Rotation")][i],
             ["width", "height"].includes(field) ? .1 : undefined, undefined, .1))),
