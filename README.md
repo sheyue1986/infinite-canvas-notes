@@ -123,7 +123,11 @@ npm start
 
 - `published-site/` 是本机桌面版对应的已构建站点，GitHub Pages 和 Windows 便携包使用同一发布入口。`npm run build` 将它复制到 `dist/`，资源路径兼容站点子目录。
 - `src/` 包含 React/Vite 开发入口和可编辑代码，包含多个与发布站点共用的功能模块。`npm run dev` 启动开发环境，`npm run build:source` 构建开发入口。
-- `windows-launcher/` 保留旧版启动器源码。当前便携包使用 Windows 桌面启动器和 WebView2，包含回环服务和本机模型转换入口。
+- `windows-desktop/` 包含当前桌面程序和模型转换源码。
 - 画布基于 Excalidraw，三维取景使用 Three.js 和 Rhino3dm，底图使用 MapLibre GL JS。演示导出使用 pdf-lib 和 PptxGenJS。
 
 修改演示导出依赖或导出实现后，可运行 `node scripts/build-presentation-export.mjs` 重新生成发布站点的导出模块。
+
+本机唯一启动入口为 `启动无限画布.bat`，对应 `Infinite Canvas Notes Desktop r14/Infinite Canvas Notes Desktop.exe`。目录名沿用原安装路径。优化和验证结果见 `性能优化记录.md`。
+
+运行 `npm run check` 检查资源、工具记忆和几何处理，运行 `npm run test:browser` 执行独立数据环境中的浏览器回归。浏览器测试需要已安装 Google Chrome，并使用本机测试端口 4195 和 9259。

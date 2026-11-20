@@ -1,0 +1,13 @@
+﻿Infinite Canvas Notes 无限画布 · 桌面版 0.2.1
+
+支持 Windows 10 2004 及更新版本、Windows 11，64 位 Intel/AMD 电脑。地图和三维预览需要支持 WebGL 2 的显卡驱动。
+
+安装包包含应用、离线 WebView2 安装组件和 Blender 5.0 转换环境。在线地图和地点搜索需要联网，Esri 静态底图需填写自己的 ArcGIS 密钥。
+
+当前安装包的 SKP 直接导入需要目标电脑已安装 SketchUp 2023。BLEND、GLB、GLTF、OBJ、STL、3DM 等导入方式随应用提供。
+
+从旧版导出项目备份后，在桌面版项目画廊选择「导入项目」。自定义素材库请单独导出和导入。升级或卸载保留 %LOCALAPPDATA%\InfiniteCanvasNotes\WebView2 中的桌面版数据。
+
+打开桌面版前请先退出旧本机版，两者默认使用本机端口 4173。安装完成后可在开始菜单或运行中的任务栏图标上右键，选择「固定到任务栏」。
+
+Blender 的许可证位于 runtime\blender\license，完整对应源码及依赖位于 sources。

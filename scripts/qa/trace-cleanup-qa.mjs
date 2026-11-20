@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {cleanPaths} from '../../src/trace-cleanup.js';
+const fragmented=Array.from({length:30},(_,i)=>Array.from({length:20},(_,j)=>[i*22+j,100+(j%2)*.15]));
+const noise=Array.from({length:200},(_,i)=>[[i*3,200],[i*3+1,201],[i*3+2,200]]);
+const result=cleanPaths([...fragmented,...noise]);
+assert.equal(result.paths.length,1);assert.equal(result.paths[0].length,2);assert.ok(result.paths[0].at(-1)[0]-result.paths[0][0][0]>650);
+const crossing=cleanPaths([[[0,50],[50,50]],[[50,50],[100,50]],[[50,0],[50,50]],[[50,50],[50,100]]],{minLength:1});
+assert.equal(crossing.paths.length,2);assert.ok(crossing.paths.every(p=>p.length===2));
+const parallel=cleanPaths([[[0,10],[100,10]],[[100,13],[0,13]]],{minLength:1});assert.equal(parallel.paths.length,2);
+const tiny=cleanPaths(Array.from({length:30},(_,i)=>[[i*5,0],[i*5+4,0]]));assert.equal(tiny.paths.length,1);assert.ok(tiny.paths[0].at(-1)[0]>140);
+const loops=cleanPaths([[[0,0],[100,0],[100,100],[0,100],[0,0]]]);assert.equal(loops.paths[0].length,5);assert.deepEqual(loops.paths[0][0],loops.paths[0].at(-1));
+const many=cleanPaths(Array.from({length:1800},(_,i)=>[[0,i*10],[50,i*10]]));assert.ok(many.paths.length<=300);assert.ok(many.stats.nodes<=6000);
+console.log(JSON.stringify({before:{paths:230,nodes:1200},after:result.stats}));
+console.log('Continuous gap joining, noise pruning, straight junction pairing, parallel separation, closed loops and size budget passed.');

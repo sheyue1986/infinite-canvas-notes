@@ -1,3 +1,4 @@
+import { canvasBusy } from "./canvas-activity.js";
 import { elementBox } from './pdf-export-regions.js';
 import { elementPolygons } from './boolean-geometry.js';
 import { cutFilled, polygonElement, maskContours, connectedPixels } from './erase-geometry.js';
@@ -116,14 +117,15 @@ export function createAdvancedEditing(React,revise,convert,capture,render) {
     const active=useRef(null),sizeRef=useRef(size),strengthRef=useRef(strength);sizeRef.current=size;strengthRef.current=strength;
     const gesture=useRef(null);
     useEffect(()=>{
-      const seen=new Set(),pending=new Set();let disposed=false;
+      const seen=new Set(),pending=new Set();let disposed=false,dirty=true;
+      const unsubscribe=api.onChange(()=>{dirty=true;});
       const scan=()=>{for(const e of api.getSceneElements()){
         if(e.type!=='image'||e.customData?.icnCutout?.fileId===e.fileId||pending.has(e.id)||seen.has(e.fileId)||!api.getFiles()[e.fileId])continue;
         pending.add(e.id);seen.add(e.fileId);
-        prepareCutout(api,e,revise,capture).catch(err=>{console.warn('Cutout preparation',err);seen.delete(e.fileId);}).finally(()=>pending.delete(e.id));
+        prepareCutout(api,e,revise,capture).catch(err=>{console.warn('Cutout preparation',err);seen.delete(e.fileId);dirty=true;}).finally(()=>pending.delete(e.id));
       }};
-      const timer=setInterval(()=>{if(!disposed&&!gesture.current&&!pending.current)scan();},500);
-      return()=>{disposed=true;clearInterval(timer);};
+      const timer=setInterval(()=>{if(!disposed&&dirty&&!canvasBusy()&&!gesture.current){dirty=false;scan();}},500);
+      return()=>{disposed=true;clearInterval(timer);unsubscribe();};
     },[api]);
     useEffect(()=>{
       const choose=id=>{active.current=['slice','softErase'].includes(id)?id:null;setMode(active.current);

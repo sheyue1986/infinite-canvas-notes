@@ -11,7 +11,10 @@
     "build": "node scripts/stage-published-site.mjs",
     "build:source": "vite build",
     "preview": "vite preview",
-    "start": "vite preview --host 127.0.0.1 --port 4173 --strictPort"
+    "start": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
+    "check": "node scripts/verify-publication.mjs && node scripts/qa/preferences.mjs after && node scripts/qa/trace-cleanup-qa.mjs && node scripts/qa/boolean-geometry-qa.mjs",
+    "test:browser": "node scripts/qa/run.mjs",
+    "test:native": "node scripts/qa/native.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.1",
@@ -24,5 +27,8 @@
     "rhino3dm": "8.35.0",
     "three": "0.187.0",
     "vite": "8.1.5"
+  },
+  "devDependencies": {
+    "playwright-core": "1.65.1"
   }
 }

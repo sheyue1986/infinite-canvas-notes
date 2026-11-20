@@ -3,3 +3,10 @@ dist/
 *.zip
 .vite/
 *.log
+
+Infinite Canvas Notes Desktop r14/
+**/bin/
+**/obj/
+scripts/qa/*.png
+scripts/qa/*.pid
+scripts/qa/downloads/
